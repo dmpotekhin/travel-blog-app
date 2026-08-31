@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets — NEVER commit
+.env
+
+# Runtime data
+logs/
+drafts/
+published/
+media_ready/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+.graphite_cache
+
+# Browser automation
+geckodriver.log
+selenium/
+.driver_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,211 @@
+# Travel Blog Automation Platform — configuration
+# All secrets live in .env (NOT here). Settings live here.
+
+app:
+  environment: development      # development | production
+  timezone: UTC
+  dry_run: true                 # when true, publishers skip real posts
+  auto_publish: false           # never publish unapproved drafts unless true
+
+server:
+  host: 127.0.0.1
+  api_port: 8000
+  ui_port: 8501
+
+archive:
+  path: ""                      # path to the photo archive (1 TB)
+  recursive: true               # recursively scan subfolders
+  incremental: true             # skip unchanged files on rescan
+
+schedule:
+  enabled: true
+  posts_per_day: 2              # cities processed per day
+  publish_time: "08:00"         # local time of day to publish
+  timezone: UTC
+
+ai:
+  provider: gemini              # gemini | deepseek | mock
+
+gemini:
+  requests_per_minute: 15
+  requests_per_day: 1500
+  min_interval_seconds: 4.3
+  retry_429_seconds: 60
+  max_retries: 3
+  model: "gemini-2.0-flash"     # verify current vision-capable model name
+  temperature: 0.4
+
+deepseek:
+  model: "deepseek-chat"        # OpenAI-compatible text model via DeepSeek
+  base_url: "https://api.deepseek.com"
+  temperature: 0.6
+
+publishing:
+  facebook: true
+  vk: true
+  telegram: true
+  zen: true
+  instagram: true
+  youtube: true
+  trip_com: true
+
+telegram:
+  chat_id: ""                   # TELEGRAM_CHAT_ID (token in .env)
+
+vk:
+  api_version: ""               # leave empty -> resolved to latest stable at runtime
+  group_id: ""                  # VK_GROUP_ID (token in .env)
+
+facebook:
+  page_id: ""                   # FACEBOOK_PAGE_ID (token in .env)
+
+trip:
+  guide_title_template: "{city} в {year}: взгляд спустя годы"
+
+retry:
+  max_attempts: 3
+  initial_delay_seconds: 60
+  exponential_backoff: true
+
+media:
+  jpeg_quality: 90
+  video:                        # video generation defaults
+    photos_per_video: 4         # 3-5 seconds each recommended
+    photo_duration_seconds: 4
+    resolution: "1080x1920"
+    font: "Arial"
+
+content:
+  photos_per_city: 8            # how many selected photos per city by default
+  max_hashtags: 10
+
+# Platform media presets. Defaults only — check live platform docs before prod.
+media_presets:
+  trip_cover:
+    format: JPEG
+    width: 1200
+    height: 800
+    max_mb: 5
+  trip_inner:
+    format: JPEG
+    width: 800
+    height: 600
+    max_mb: 3
+  instagram_post:
+    format: JPEG
+    width: 1080
+    height: 1080
+    max_mb: 8
+  instagram_stories:
+    format: JPEG
+    width: 1080
+    height: 1920
+    max_mb: 8
+  instagram_reels:
+    format: MP4
+    width: 1080
+    height: 1920
+    max_mb: 100
+  facebook_post:
+    format: JPEG
+    width: 1200
+    height: 630
+    max_mb: 8
+  facebook_stories:
+    format: JPEG
+    width: 1080
+    height: 1920
+    max_mb: 8
+  facebook_reels:
+    format: MP4
+    width: 1080
+    height: 1920
+    max_mb: 100
+  youtube_shorts:
+    format: MP4
+    width: 1080
+    height: 1920
+    max_mb: 100
+  youtube_full:
+    format: MP4
+    width: 1920
+    height: 1080
+    max_mb: 200
+  telegram:
+    format: JPEG
+    width: 1280
+    height: 720
+    max_mb: 5
+  zen:
+    format: JPEG
+    width: 1200
+    height: 630
+    max_mb: 10
+  vk_post:
+    format: JPEG
+    width: 1200
+    height: 630
+    max_mb: 8
+  vk_vertical:
+    format: JPEG
+    width: 1080
+    height: 1920
+    max_mb: 8
+
+# VibeCoding content type: generated blog posts (text + image) about vibe coding.
+# Secrets live in .env (REPLICATE_API_TOKEN / OPENAI_API_KEY / HUGGINGFACE_API_KEY).
+vibecoding:
+  enabled: true                  # master switch for the VibeCoding feature
+  schedule_time: "12:00"         # local time to auto-publish scheduled VibeCoding posts
+  schedule_days: [0, 1, 2, 3, 4, 5, 6]   # days of week (0=Mon ... 6=Sun)
+  auto_publish: false            # true -> scheduler publishes drafts automatically
+  image_generation:
+    enabled: true
+    provider: replicate          # replicate | openai | huggingface | mock
+    model: "stability-ai/sdxl"   # DALL-E 3, stability-ai/sdxl, black-forest-labs/flux-schnell, ...
+    api_key_env: "REPLICATE_API_TOKEN"
+    width: 1024
+    height: 1024
+    num_outputs: 1
+  text_generation:
+    model: "deepseek-chat"       # reuses the existing DeepSeek client
+    max_tokens: 1500
+    temperature: 0.7
+  default_prompts:
+    text: "Напиши пост для блога о вайбкодинге на тему {topic}. Используй личный опыт, примеры кода, расскажи о трудностях и решениях. Стиль: живой, вдохновляющий. Объём 500-700 слов."
+    image: "Футуристический кодер за рабочим столом, вокруг летают строки кода, светящиеся синим, абстрактный фон, высокотехнологичный стиль, 4k, детализированно"
+
+# ---- Trip.com (Trip Moments) content-compliance guidelines ----
+trip_guidelines:
+  enabled: true                  # master switch for travel-post validation
+  min_photos_attraction: 3       # minimum photos for an attraction post
+  min_photos_restaurant: 5       # minimum photos for a restaurant/food post
+  require_interior_photo: true   # at least one interior/setting photo
+  min_words: 100
+  forbidden_patterns: ["watermark", "logo", "qr", "http", "tel:", "@"]
+  video_min_duration_sec: 30
+  ai_disclaimer: "This post was created with the assistance of AI."
+  geotag_required: true
+  title_emoji_recommended: true
+  saturation_boost: 1.2
+  block_non_compliant: false     # soft gate: log + show in UI, do NOT block publish
+
+# ---- VibeCoding educational/expert content-compliance guidelines ----
+vibecoding_guidelines:
+  enabled: true                  # master switch for VibeCoding-post validation
+  min_words: 200
+  max_words: 700
+  min_photos: 2
+  max_photos: 5
+  require_code_screenshot: true
+  recommend_ai_image: true
+  title_max_length: 80
+  hashtag_count_min: 3
+  hashtag_count_max: 5
+  video_min_duration_sec: 15
+  video_max_duration_sec: 60
+  forbidden_patterns: ["заработай", "миллион", "100%", "бесплатно"]
+  engagement_question_required: true
+  default_engagement_question: "А какой инструмент используешь ты? Делитесь в комментариях!"
+  ai_image_prompt_template: "Футуристический кодер, строки кода, абстрактный фон, стиль технологичный"
+  block_non_compliant: false     # soft gate: log + show in UI, do NOT block publish

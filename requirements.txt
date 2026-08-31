@@ -1,0 +1,50 @@
+# Travel Blog Automation Platform — Python dependencies
+# Python 3.10+ | This list is the minimal set that is BOTH used by the code
+# AND installs cleanly on this machine (no native build required).
+#
+# NOTE: Xcode CLT is absent here, so packages that compile native bindings
+# (google-genai -> cryptography, reverse_geocoder -> scikit-learn) are NOT
+# installed by default. The code handles their absence at runtime:
+#   * AI is invoked via httpx REST (Gemini :generateContent / DeepSeek
+#     OpenAI-compatible) — google-genai SDK replaced (ARCHITECTURE.md).
+#   * reverse_geocoder is optional — city detection falls back to
+#     folder/filename parsing (scanner.py guards the import).
+
+# --- Core / services ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+streamlit>=1.34
+pydantic>=2.7
+pydantic-settings>=2.2
+python-dotenv>=1.0
+PyYAML>=6.0
+loguru>=0.7
+aiosqlite>=0.20
+apscheduler>=3.10
+
+# --- AI clients (async HTTP; no native SDK) ---
+httpx>=0.27
+
+# --- Media / data ---
+Pillow>=10.3
+numpy>=1.26
+pandas>=2.2
+
+# --- Video (OPTIONAL / deferred: moviepy import + ffmpeg resolve can hang
+#     on this machine; modules/media.py guards the import). Uncomment to enable:
+# moviepy>=1.0.3
+# imageio-ffmpeg>=0.4.9
+
+# --- Testing ---
+pytest>=8.2
+pytest-asyncio>=0.23
+
+# ---------------------------------------------------------------------------
+# Optional / NOT installed by default (see ARCHITECTURE.md):
+#   google-genai>=0.1        # replaced by httpx REST; needs cryptography (no Xcode CLT)
+#   reverse_geocoder>=1.6    # needs scikit-learn (compiled); optional, fallback in place
+#   openai>=1.30             # unused — DeepSeek uses the OpenAI-compatible REST API via httpx
+#   selenium>=4.18           # Trip.com is manual-assisted; not used
+#   webdriver-manager>=4.0
+#   plotly>=5.22             # dashboard uses Streamlit charts; not used
+# ---------------------------------------------------------------------------
