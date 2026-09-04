@@ -25,8 +25,15 @@ from core.config import Config
 from core.database import Database
 
 
+def _load_config() -> Config:
+    """Single config source for the CLI entrypoint (ADR-101)."""
+    from core.config import load_config_file
+
+    return load_config_file()
+
+
 async def _dispatch(args) -> dict:
-    cfg = Config()
+    cfg = _load_config()
     db = Database()
     await db.connect()
     try:

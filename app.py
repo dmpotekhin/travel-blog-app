@@ -26,9 +26,20 @@ from modules.scheduler import Scheduler
 from modules.stats import StatsService
 
 
+def _load_config() -> Config:
+    """Single config source for the API entrypoint (ADR-101).
+
+    Always read config.yaml — never a bare ``Config()`` (which would silently
+    ignore ``app.dry_run``, ``publishing.*`` and any user-edited settings).
+    """
+    from core.config import load_config_file
+
+    return load_config_file()
+
+
 @asynccontextmanager
 async def lifespan(app_obj: FastAPI):
-    app_obj.state.config = Config()
+    app_obj.state.config = _load_config()
     app_obj.state.db = Database()
     await app_obj.state.db.connect()
     try:
