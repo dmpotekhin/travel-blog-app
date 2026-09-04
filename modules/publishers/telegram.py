@@ -87,10 +87,16 @@ class TelegramPublisher(BasePublisher):
             return PublishResult(success=False, error="rate limited (429)", status_hint="retry")
         if r.status_code >= 400:
             return PublishResult(success=False, error=r.text[:300], status_hint="failed")
-        msg = r.json().get("result", {})
+        res = r.json().get("result", {})
+        # sendMediaGroup returns an ARRAY of Messages; sendMessage/sendPhoto return
+        # a single Message object. Normalize so we never hit 'list'.get(...).
+        if isinstance(res, list):
+            first = res[0] if res else {}
+        else:
+            first = res if isinstance(res, dict) else {}
         return PublishResult(
             success=True,
-            external_id=str(msg.get("message_id", "")),
+            external_id=str(first.get("message_id", "")),
             url="",
             status_hint="published",
             degraded=degraded,
@@ -104,8 +110,12 @@ class TelegramPublisher(BasePublisher):
         album caption. Omit it entirely (as the old code did) and the album goes
         out with no text, a silent drop ADR-104 exists to prevent.
         """
-        handles = [open(p, "rb") for p in selected]
+        # Open files defensively: if a later open() raises, close the ones already
+        # opened so we don't leak file handles (partial-failure safety).
+        handles: list = []
         try:
+            for p in selected:
+                handles.append(open(p, "rb"))
             media_items = []
             files = {}
             for i, p in enumerate(selected):

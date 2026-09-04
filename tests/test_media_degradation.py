@@ -9,8 +9,6 @@
 import asyncio
 import json
 
-import pytest
-
 from core import models as m
 from modules.publishers.base import PublishResult, plan_media
 from modules.publishers import telegram as tg
@@ -56,12 +54,19 @@ def test_plan_media_clean_when_fit():
 class _FakeResp:
     status_code = 200
 
+    def __init__(self, result=None):
+        # Real Bot API: sendMessage/sendPhoto -> {"result": {…Message}}, and
+        # sendMediaGroup -> {"result": [Message, Message, …]} (an ARRAY). Default
+        # to the single-Message form so callers that need the array pass it in.
+        self._result = result if result is not None else {"message_id": 7}
+
     def json(self):
-        return {"result": {"message_id": 7}}
+        return {"result": self._result}
 
 
 class _FakeClient:
-    def __init__(self, *a, **k):
+    def __init__(self, result=None):
+        self._result = result
         self.posts = []
 
     async def __aenter__(self):
@@ -72,14 +77,13 @@ class _FakeClient:
 
     async def post(self, url, **kw):
         self.posts.append((url, kw))
-        return _FakeResp()
+        return _FakeResp(self._result)
 
 
 def test_telegram_sends_media_group_and_flags_truncated_caption(tmp_path, monkeypatch):
-    from modules.publishers import base as base_mod
-
     monkeypatch.setattr("modules.publishers.base.get_secrets", lambda: _Secrets())
-    cli = _FakeClient()
+    # sendMediaGroup returns an ARRAY of Messages — a realistic response.
+    cli = _FakeClient(result=[{"message_id": 7}, {"message_id": 8}])
     monkeypatch.setattr("modules.publishers.telegram.httpx.AsyncClient", lambda *a, **k: cli)
 
     p1 = tmp_path / "a.jpg"; p1.write_bytes(b"x")
@@ -89,6 +93,7 @@ def test_telegram_sends_media_group_and_flags_truncated_caption(tmp_path, monkey
     res = asyncio.run(pub.publish(draft, [str(p1), str(p2)]))
 
     assert res.success is True
+    assert res.external_id == "7"  # taken from result[0] of the album array
     assert res.degraded is True
     assert res.degraded_reason  # non-empty: explains WHAT degraded (ADR-104)
     assert cli.posts and cli.posts[0][0].endswith("/sendMediaGroup")
@@ -100,18 +105,19 @@ def test_telegram_sends_media_group_and_flags_truncated_caption(tmp_path, monkey
 
 
 def test_telegram_text_only_uses_sendmessage_not_degraded(monkeypatch):
-    from modules.publishers import base as base_mod
-
     monkeypatch.setattr("modules.publishers.base.get_secrets", lambda: _Secrets())
-    cli = _FakeClient()
+    cli = _FakeClient(result={"message_id": 5})
     monkeypatch.setattr("modules.publishers.telegram.httpx.AsyncClient", lambda *a, **k: cli)
 
     pub = tg.TelegramPublisher(None, _TelegramCfg())
-    draft = _draft(content="hello world")  # short, no media -> sendMessage
+    # 1500 chars is inside 1025..4096: in the OLD code this range was FALSELY
+    # degraded (the media caption limit of 1024 was applied to a sendMessage),
+    # and the full text still went out. Guard that this no longer happens.
+    draft = _draft(content="x" * 1500)
     res = asyncio.run(pub.publish(draft, []))
 
     assert res.success is True
     assert res.degraded is False
     assert res.degraded_reason == ""
     assert cli.posts[0][0].endswith("/sendMessage")
-    assert cli.posts[0][1]["json"]["text"] == "hello world"
+    assert cli.posts[0][1]["json"]["text"] == "x" * 1500

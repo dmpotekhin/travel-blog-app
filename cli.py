@@ -73,7 +73,10 @@ async def _dispatch(args) -> dict:
             from modules.scheduler import Scheduler
 
             res = await Scheduler(db, cfg).run_due(limit=args.limit)
-            return {"published": [r for r in res if r.status == m.PublicationStatus.PUBLISHED]}
+            return {"published": [
+                {"platform": r.platform, "status": r.status.value}
+                for r in res if r.status == m.PublicationStatus.PUBLISHED
+            ]}
 
         if cmd == "tick":
             from modules.scheduler import Scheduler
