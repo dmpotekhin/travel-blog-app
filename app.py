@@ -95,8 +95,21 @@ async def scheduler_tick():
 
 @app.post("/api/scheduler/publish-due")
 async def publish_due():
+    """Run due publications and return which actually reached PUBLISHED.
+
+    Historically the endpoint used ``getattr(r, "success", False)`` but the rows
+    are Publication objects (no ``success`` attr) so it always returned an empty
+    list. Now we filter on the real status (ADR-105, F9).
+    """
     results = await _sched().run_due(limit=20)
-    return {"published": [r for r in results if getattr(r, "success", False)]}
+    published = [
+        p for p in results
+        if (p.status.value if hasattr(p.status, "value") else p.status) == "published"
+    ]
+    return {
+        "published": [p.platform for p in published],
+        "count": len(published),
+    }
 
 
 @app.post("/api/pipeline/content/{city_id}")

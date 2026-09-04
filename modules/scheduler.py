@@ -26,7 +26,7 @@ from loguru import logger
 from core import models as m
 from core.database import Database
 from modules.publishers.base import PERMANENT_PREFIX
-from modules.publishers.registry import MANUAL_PLATFORMS
+from modules.publishers.registry import MANUAL_PLATFORMS, build_publisher
 from modules.publishers.service import PublishService
 from modules.publishers.vibecoding import VibeCodingPublisherService
 from modules.trip_validator import TripValidator
@@ -97,13 +97,13 @@ class Scheduler:
 
         ``publishing.*`` flags were dead: the engine generated drafts for all
         platforms and plan() scheduled every one of them. Now plan() skips a
-        platform that is explicitly disabled (``publishing.<platform>: false``).
+        platform that is explicitly disabled (``publishing.<platform>: false``),
+        consulting the single source of truth — ``BasePublisher.enabled``.
         """
-        guard = getattr(self.config, "publishing", None)
-        if guard is None:
+        try:
+            return build_publisher(self.db, self.config, platform).enabled
+        except Exception:
             return True
-        # Reuse the same semantics BasePublisher.enabled uses: missing flag -> on.
-        return bool(getattr(guard, platform, True))
 
     async def plan(self, limit: int = 20) -> List[m.Publication]:
         """Create publication rows for approved drafts that have none yet."""

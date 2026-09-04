@@ -1,5 +1,13 @@
 # ARCHITECTURE — Travel Blog Automation Platform
 
+> **ADR-101..105 (implemented 2026-09-04).** Drift between this document and the
+> code was fixed: API/CLI now load `config.yaml` (ADR-101), publishing is honest
+> (VK photo -> `manual`; error classes permanent/retryable; `publishing.*` flags
+> honoured) (ADR-102), publishing is claim-guarded and goes through the state
+> machine (ADR-103), the media path no longer silently degrades (ADR-104), and
+> dead code + doc/code drift + the `publish-due` endpoint were fixed (ADR-105).
+> See `docs/architecture-review-2026-09-04.md` for the audit findings.
+
 This document is both the **PHASE 0 analysis** (the design produced before code)
 and the living **record of technical decisions** (section 77). Update it whenever
 a decision changes. It is the source of truth for *why* the code is shaped the
@@ -41,7 +49,7 @@ while the ABC/adaptor boundaries preserve the option to extract a service later.
 
 **Non-negotiable separation rules (section 78):**
 - UI never talks to Gemini / Telegram / Facebook directly — it goes through services.
-- Publishers never talk to the DB directly — they receive a validated `ContentPack`.
+- Publishers never talk to the DB directly — they receive `publish(draft: Draft, media_paths)`; the draft is validated before publication (ADR-105).
 - Scanner/queue never hardcode a platform — they dispatch through `Publisher`.
 
 ---
@@ -199,9 +207,10 @@ travel-blog-app/
 | **YouTube** | Data API v3 ⚠️ | requires OAuth2 consent + channel auth + upload quota | MVP: **manual-assisted**; document the OAuth consent flow. |
 
 **Rule honored everywhere:** if official automation is impossible, we DO NOT fake a
-successful publication — we produce the fully prepared `ContentPack` + media and
-report `manual-assisted` so a human completes it. The publication record tracks this
-as `failed`/`disabled` with a clear `error_message`, never as `published`.
+successful publication — we produce the fully prepared post (draft + media) and
+report `manual` so a human completes it (ADR-102: e.g. VK photo uploads are flagged
+`manual`, never a fake `published`). The publication record tracks this as
+`manual`/`failed` with a clear `error_message`, never as `published`.
 
 ---
 

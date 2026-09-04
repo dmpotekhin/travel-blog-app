@@ -254,7 +254,7 @@ streamlit run ui/dashboard.py
 | `archive` | `path`, `recursive`, `incremental` |
 | `schedule` | `posts_per_day`, `publish_time`, `timezone` |
 | `ai` | `provider` (gemini/deepseek/mock), `requests_per_minute`, `model`, `temperature` |
-| `publishing` | флаги `facebook/vk/telegram/zen/instagram/youtube/trip_com` — включать площадку или нет |
+| `publishing` | флаги `facebook/vk/telegram/zen/instagram/youtube/trip_com` — включать площадку или нет. Теперь реально уважаются: выключенная площадка не генерирует публикации (ADR-102/105). |
 | `vibecoding` | `enabled`, `schedule_time`, `schedule_days`, `auto_publish`, `image_generation` (provider/model/api_key_env/width/height), `text_generation` (max_tokens/temperature), `default_prompts` |
 | `trip_guidelines` | правила валидации Trip.com: `min_photos_attraction/restaurant`, `min_words`, `forbidden_patterns`, `geotag_required`, `ai_disclaimer`, `block_non_compliant` |
 | `vibecoding_guidelines` | правила валидации VibeCoding: `min_words/max_words`, `hashtag_count_min/max`, `forbidden_patterns`, `engagement_question_required`, `block_non_compliant` |

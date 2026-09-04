@@ -83,7 +83,7 @@ class BasePublisher(ABC):
         flags = getattr(self.config, "publishing", None)
         if flags is None:
             return True
-        key = self.name
+        key = getattr(self, "platform", None) or self.name
         return bool(getattr(flags, key, True))
 
     @property
