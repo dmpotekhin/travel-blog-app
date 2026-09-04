@@ -177,7 +177,24 @@ class Scheduler:
                     logger.bind(validator="trip_com", draft_id=draft.id) \
                         .warning("Post blocked by Trip guidelines: {}", gate["summary"])
                     continue
-            await self.publish_service.publish_draft(draft.id)
+            # ADR-103: atomically claim the row (SCHEDULED/PENDING -> processing).
+            # A concurrent tick that loses the compare-and-swap gets None and skips,
+            # so the same publication is never emitted twice (F6).
+            claimed = await self.db.claim_publication(pub.id)
+            if claimed is None:
+                continue
+            try:
+                await self.publish_service.publish_draft(draft.id)
+            except Exception as exc:
+                # Unexpected publisher failure: release the claim as FAILED so the
+                # row is not stranded in 'processing' and can be retried (F4/F5).
+                logger.bind(platform=pub.platform, draft_id=draft.id) \
+                    .exception("Publish raised unexpectedly: {}", exc)
+                await self.db.update_publication(
+                    pub.id,
+                    status=m.PublicationStatus.FAILED.value,
+                    error_message=str(exc),
+                )
             updated = await self.db.get_publication_by_platform(
                 pub.city_id, pub.platform
             )

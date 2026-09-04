@@ -632,10 +632,43 @@ class Database:
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return await self.get_published(publication_id)
+        if "status" in updates:
+            # ADR-103: every status write goes through the Publication state
+            # machine. This stops the publish path from skipping straight from
+            # SCHEDULED/PENDING to PUBLISHED via the generic setter (F4).
+            current = await self.get_published(publication_id)
+            if current is None:
+                raise NotFoundError(f"Publication {publication_id} not found")
+            check_transition(
+                current.status.value, updates["status"],
+                _PUBLICATION_TRANSITIONS, entity="publication",
+            )
         sets = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [publication_id]
         async with self.transaction() as conn:
             await conn.execute(f"UPDATE published SET {sets} WHERE id = ?", values)
+        return await self.get_published(publication_id)
+
+    async def claim_publication(self, publication_id: int) -> Optional[m.Publication]:
+        """Atomically claim a waiting publication (ADR-103).
+
+        ``UPDATE ... WHERE status IN ('scheduled','pending')`` is a compare-and-
+        swap on the status column: exactly one concurrent tick sees a non-zero
+        ``rowcount`` and wins the claim (status -> processing); the loser gets
+        ``None`` and must skip, so the same row is never published twice (F6).
+        """
+        async with self.transaction() as conn:
+            cur = await conn.execute(
+                "UPDATE published SET status = ? WHERE id = ? AND status IN (?, ?)",
+                (
+                    m.PublicationStatus.PROCESSING.value,
+                    publication_id,
+                    m.PublicationStatus.SCHEDULED.value,
+                    m.PublicationStatus.PENDING.value,
+                ),
+            )
+            if cur.rowcount == 0:
+                return None
         return await self.get_published(publication_id)
 
     async def update_publication_status(self, publication_id: int, status: str) -> Optional[m.Publication]:
