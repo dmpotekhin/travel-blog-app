@@ -12,7 +12,7 @@ from typing import List, Optional
 import httpx
 
 from core.models import Draft
-from modules.publishers.base import BasePublisher, PublishResult
+from modules.publishers.base import BasePublisher, PublishResult, plan_media
 
 
 class FacebookPublisher(BasePublisher):
@@ -30,14 +30,19 @@ class FacebookPublisher(BasePublisher):
         page_id = self.secrets.facebook_page_id
         try:
             async with httpx.AsyncClient(timeout=30) as client:
-                if media_paths:
-                    # upload the first photo, then publish it on the page
-                    r = await client.post(
-                        f"https://graph.facebook.com/{page_id}/photos",
-                        params={"access_token": token},
-                        files={"source": (media_paths[0], open(media_paths[0], "rb"))},
-                        data={"message": draft.content[:5000]},
-                    )
+                selected, degraded, _note = plan_media(
+                    media_paths or [], draft.content, photo_cap=1, caption_limit=5000
+                )
+                if selected:
+                    # FB Graph /photos accepts a single source; post the first photo
+                    # and flag degraded if there were more to send (F7/ADR-104).
+                    with open(selected[0], "rb") as fh:
+                        r = await client.post(
+                            f"https://graph.facebook.com/{page_id}/photos",
+                            params={"access_token": token},
+                            files={"source": (selected[0], fh)},
+                            data={"message": draft.content[:5000]},
+                        )
                 else:
                     r = await client.post(
                         f"https://graph.facebook.com/{page_id}/feed",
@@ -56,4 +61,4 @@ class FacebookPublisher(BasePublisher):
                 return PublishResult(success=False, manual=True, error=err, status_hint="manual")
             return PublishResult(success=False, error=err, status_hint="failed")
         pid = data.get("id", "")
-        return PublishResult(success=True, external_id=str(pid), url="", status_hint="published")
+        return PublishResult(success=True, external_id=str(pid), url="", status_hint="published", degraded=degraded)

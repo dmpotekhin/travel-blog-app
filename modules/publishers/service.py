@@ -5,6 +5,8 @@ import datetime as dt
 import json
 from typing import List, Optional
 
+from loguru import logger
+
 from core import models as m
 from core.database import Database
 from modules.publishers.base import PERMANENT_PREFIX
@@ -81,11 +83,20 @@ class PublishService:
         if result.success and not result.manual:
             await self.db.update_draft_status(draft_id, m.DraftStatus.PUBLISHED)
 
+        if result.degraded:
+            # ADR-104: the post went out but the platform could only honour part of
+            # the media/caption. Fail loud, not silent — the operator must see it.
+            logger.warning(
+                "Publication degraded {platform} city={city} media truncated/dropped: {note}",
+                platform=draft.platform, city=draft.city_id, note=result.error or result.status_hint,
+            )
+
         return {
             "publication_id": saved.id if saved else None,
             "platform": draft.platform,
             "status": status.value,
             "manual": result.manual,
+            "degraded": result.degraded,
             "external_id": external_id,
             "url": url,
             "error": err,

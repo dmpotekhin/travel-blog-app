@@ -34,10 +34,37 @@ class PublishResult:
     #: False for "don't retry" errors (e.g. bot config missing, invalid scope): a
     #: future retry will not fix them, so ``retry_failed`` must not burn attempts.
     retryable: bool = True
+    #: True when the platform could only honour part of the media/caption — the
+    #: post still went out, but degraded (F7). Surfaced by the API + structured log.
+    degraded: bool = False
 
 
 #: Marked as a permanent, non-retryable failure on a Publication.
 PERMANENT_PREFIX = "[permanent] "
+
+
+def plan_media(media_paths, content: str, *, photo_cap: int | None, caption_limit: int | None):
+    """Decide which photos a publisher should send and whether that degrades (ADR-104).
+
+    Returns ``(selected_paths, degraded, note)``:
+      * ``selected_paths`` — the photos to actually send (honouring ``photo_cap``).
+      * ``degraded`` — True when the caption is truncated or not all photos fit
+        ``photo_cap``, i.e. the platform only honoured part of the media (F7).
+      * ``note`` — a human-readable explanation of what degraded; empty if clean.
+    """
+    media = list(media_paths or [])
+    degraded = False
+    reasons = []
+    if photo_cap is not None and len(media) > photo_cap:
+        selected = media[:photo_cap]
+        degraded = True
+        reasons.append(f"{len(media)} photos -> {photo_cap}")
+    else:
+        selected = media
+    if caption_limit is not None and len(content) > caption_limit:
+        degraded = True
+        reasons.append(f"caption {len(content)} -> {caption_limit}")
+    return selected, degraded, "; ".join(reasons)
 
 
 class BasePublisher(ABC):
