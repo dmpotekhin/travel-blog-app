@@ -38,6 +38,15 @@
 - [x] P10: Dashboard — StatsService (read-only, unit-tested) + Streamlit app (ui/dashboard.py). Verified 2026-08-28 (tests/test_stats.py; full suite 30 passed; smoke-tested vs real DB).
 - [x] P11: Tests — comprehensive per-phase coverage + end-to-end pipeline test (scan -> content -> approve -> schedule -> publish). Verified 2026-08-28 (tests/test_e2e_pipeline.py; full suite 31 passed).
 - [x] P12: Final verification — app.py (FastAPI admin API) + cli.py (CLI orchestration) + scheduler daemon wiring; run.sh fully functional. Verified 2026-08-28 (tests/test_api.py: 4 passed; full suite 35 passed; cli.py stats/tick smoke; e2e dry-run test_e2e_pipeline passes).
+- [x] P13: Architecture review (software-architect) + ADR-101..105 — full audit via docs/architecture-review-2026-09-04.md; all five ADRs implemented and verified. Verified 2026-09-04 (full suite 80 passed, 1 warning).
+
+## ADR-101..105 (completed 2026-09-04)
+
+- [x] ADR-101: API/CLI load config.yaml as the single config source (was bare Config()).
+- [x] ADR-102: honest publishing — VK photo -> manual; error classes permanent/retryable; publishing.* flags honoured (plan() consults BasePublisher.enabled).
+- [x] ADR-103: atomic publish claim (SCHEDULED/PENDING -> processing) + state-machine enforcement in update_publication (no double publish).
+- [x] ADR-104: media path honest — Telegram sends a media group (up to 10), degraded flag + loud log when caption truncated/photos dropped.
+- [x] ADR-105: removed ~210 dead wrapper lines in core/database.py; fixed /api/scheduler/publish-due (always returned []); BasePublisher.enabled wired; architectural guard tests; docs synced.
 
 ## Recent Activity
 
