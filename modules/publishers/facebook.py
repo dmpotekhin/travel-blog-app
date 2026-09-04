@@ -7,8 +7,6 @@ never a fake ``published``.
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 import httpx
 
 from core.models import Draft
@@ -18,6 +16,9 @@ from modules.publishers.base import BasePublisher, PublishResult, plan_media
 class FacebookPublisher(BasePublisher):
     name = "facebook"
     mode = "partial"
+
+    PHOTO_CAP = 1         # Graph /photos accepts a single source
+    CAPTION_LIMIT = 5000  # photo-caption / feed-message length ceiling used here
 
     @property
     def key_configured(self) -> bool:
@@ -30,8 +31,9 @@ class FacebookPublisher(BasePublisher):
         page_id = self.secrets.facebook_page_id
         try:
             async with httpx.AsyncClient(timeout=30) as client:
-                selected, degraded, _note = plan_media(
-                    media_paths or [], draft.content, photo_cap=1, caption_limit=5000
+                selected, degraded, note = plan_media(
+                    media_paths or [], draft.content,
+                    photo_cap=self.PHOTO_CAP, caption_limit=self.CAPTION_LIMIT,
                 )
                 if selected:
                     # FB Graph /photos accepts a single source; post the first photo
@@ -41,7 +43,7 @@ class FacebookPublisher(BasePublisher):
                             f"https://graph.facebook.com/{page_id}/photos",
                             params={"access_token": token},
                             files={"source": (selected[0], fh)},
-                            data={"message": draft.content[:5000]},
+                            data={"message": draft.content[: self.CAPTION_LIMIT]},
                         )
                 else:
                     r = await client.post(
@@ -61,4 +63,4 @@ class FacebookPublisher(BasePublisher):
                 return PublishResult(success=False, manual=True, error=err, status_hint="manual")
             return PublishResult(success=False, error=err, status_hint="failed")
         pid = data.get("id", "")
-        return PublishResult(success=True, external_id=str(pid), url="", status_hint="published", degraded=degraded)
+        return PublishResult(success=True, external_id=str(pid), url="", status_hint="published", degraded=degraded, degraded_reason=note)

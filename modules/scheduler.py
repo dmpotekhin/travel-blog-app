@@ -102,8 +102,15 @@ class Scheduler:
         """
         try:
             return build_publisher(self.db, self.config, platform).enabled
-        except Exception:
-            return True
+        except Exception as exc:
+            # Fail loud, not silent, and fail SAFE: a config/import break must never
+            # be treated as "platform is enabled" (which would auto-publish against
+            # a broken config). Fall back to the literal publishing.<platform> flag.
+            logger.bind(platform=platform).warning(
+                "platform_enabled check failed ({exc}); falling back to publishing.{platform} flag",
+                exc=exc,
+            )
+            return bool(getattr(getattr(self.config, "publishing", None), platform, True))
 
     async def plan(self, limit: int = 20) -> List[m.Publication]:
         """Create publication rows for approved drafts that have none yet."""

@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -89,4 +90,28 @@ def test_telegram_sends_media_group_and_flags_truncated_caption(tmp_path, monkey
 
     assert res.success is True
     assert res.degraded is True
+    assert res.degraded_reason  # non-empty: explains WHAT degraded (ADR-104)
     assert cli.posts and cli.posts[0][0].endswith("/sendMediaGroup")
+    # ADR-104 fix: the album caption must ride on the first media item, not be
+    # dropped silently (regression: the old code sent a media group with no
+    # caption at all — exactly the silent drop ADR-104 exists to prevent).
+    media = json.loads(cli.posts[0][1]["data"]["media"])
+    assert media[0].get("caption") == "x" * 1024
+
+
+def test_telegram_text_only_uses_sendmessage_not_degraded(monkeypatch):
+    from modules.publishers import base as base_mod
+
+    monkeypatch.setattr("modules.publishers.base.get_secrets", lambda: _Secrets())
+    cli = _FakeClient()
+    monkeypatch.setattr("modules.publishers.telegram.httpx.AsyncClient", lambda *a, **k: cli)
+
+    pub = tg.TelegramPublisher(None, _TelegramCfg())
+    draft = _draft(content="hello world")  # short, no media -> sendMessage
+    res = asyncio.run(pub.publish(draft, []))
+
+    assert res.success is True
+    assert res.degraded is False
+    assert res.degraded_reason == ""
+    assert cli.posts[0][0].endswith("/sendMessage")
+    assert cli.posts[0][1]["json"]["text"] == "hello world"

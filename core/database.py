@@ -672,10 +672,9 @@ class Database:
         return await self.get_published(publication_id)
 
     async def update_publication_status(self, publication_id: int, status: str) -> Optional[m.Publication]:
-        current = await self.get_published(publication_id)
-        if current is None:
-            raise NotFoundError(f"Publication {publication_id} not found")
-        check_transition(current.status.value, status, _PUBLICATION_TRANSITIONS, entity="publication")
+        # ADR-103: update_publication already fetches the row and runs the state
+        # machine (check_transition), so delegate — doing it here too would SELECT
+        # + validate the transition twice for every single status write.
         return await self.update_publication(publication_id, status=status)
 
     async def get_publications_by_status(

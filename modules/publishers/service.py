@@ -86,9 +86,13 @@ class PublishService:
         if result.degraded:
             # ADR-104: the post went out but the platform could only honour part of
             # the media/caption. Fail loud, not silent — the operator must see it.
+            # Use the real reason threaded from the publisher (degraded_reason),
+            # not the (empty/dead) error or status_hint — that used to log
+            # "degraded ... : published", which hid what was actually dropped.
             logger.warning(
                 "Publication degraded {platform} city={city} media truncated/dropped: {note}",
-                platform=draft.platform, city=draft.city_id, note=result.error or result.status_hint,
+                platform=draft.platform, city=draft.city_id,
+                note=result.degraded_reason or result.error or result.status_hint,
             )
 
         return {

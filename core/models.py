@@ -110,7 +110,7 @@ _DRAFT_TRANSITIONS: Dict[str, set] = {
 _PUBLICATION_TRANSITIONS: Dict[str, set] = {
     PublicationStatus.PENDING: {PublicationStatus.PROCESSING, PublicationStatus.FAILED, PublicationStatus.DISABLED},
     PublicationStatus.PROCESSING: {PublicationStatus.SCHEDULED, PublicationStatus.PUBLISHED, PublicationStatus.FAILED, PublicationStatus.MANUAL},
-    PublicationStatus.SCHEDULED: {PublicationStatus.PUBLISHED, PublicationStatus.FAILED},
+    PublicationStatus.SCHEDULED: {PublicationStatus.PROCESSING, PublicationStatus.PUBLISHED, PublicationStatus.FAILED},
     PublicationStatus.PUBLISHED: set(),    # terminal — idempotency guard
     PublicationStatus.FAILED: {PublicationStatus.PENDING, PublicationStatus.DISABLED},
     PublicationStatus.DISABLED: set(),

@@ -21,6 +21,7 @@ import asyncio
 import json
 import sys
 
+from core import models as m
 from core.config import Config
 from core.database import Database
 
@@ -72,7 +73,7 @@ async def _dispatch(args) -> dict:
             from modules.scheduler import Scheduler
 
             res = await Scheduler(db, cfg).run_due(limit=args.limit)
-            return {"published": [r for r in res if getattr(r, "success", False)]}
+            return {"published": [r for r in res if r.status == m.PublicationStatus.PUBLISHED]}
 
         if cmd == "tick":
             from modules.scheduler import Scheduler

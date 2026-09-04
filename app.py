@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from core import models as m
 from core.config import Config
 from core.database import Database
 from modules.scheduler import Scheduler
@@ -104,7 +105,7 @@ async def publish_due():
     results = await _sched().run_due(limit=20)
     published = [
         p for p in results
-        if (p.status.value if hasattr(p.status, "value") else p.status) == "published"
+        if p.status == m.PublicationStatus.PUBLISHED
     ]
     return {
         "published": [p.platform for p in published],

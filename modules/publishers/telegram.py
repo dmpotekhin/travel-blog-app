@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Optional
 
 import httpx
 
@@ -20,6 +19,10 @@ class TelegramPublisher(BasePublisher):
     name = "telegram"
     mode = "auto"
     api_base = "https://api.telegram.org/bot{token}"
+
+    PHOTO_CAP = 10          # sendMediaGroup: up to 10 photos per album
+    CAPTION_LIMIT = 1024    # album/caption length limit (media branches)
+    TEXT_LIMIT = 4096       # sendMessage text limit (text-only branch)
 
     @property
     def key_configured(self) -> bool:
@@ -39,56 +42,82 @@ class TelegramPublisher(BasePublisher):
             )
         chat_id = self.config.telegram.chat_id
         media = media_paths or []
-        selected, degraded, _note = plan_media(
-            media, draft.content, photo_cap=10, caption_limit=1024
-        )
-        caption = draft.content[:1024]
+
+        if media:
+            selected, degraded, note = plan_media(
+                media, draft.content, photo_cap=self.PHOTO_CAP,
+                caption_limit=self.CAPTION_LIMIT,
+            )
+            caption = draft.content[: self.CAPTION_LIMIT]
+        else:
+            # Text-only branch: sendMessage takes up to TEXT_LIMIT chars, so the
+            # caption limit of the media branches does not apply here — otherwise
+            # a long text-only post would be (falsely) flagged as degraded.
+            selected = []
+            text = draft.content
+            degraded = len(text) > self.TEXT_LIMIT
+            caption = text[: self.TEXT_LIMIT]
+            note = f"caption {len(text)} -> {self.TEXT_LIMIT}" if degraded else ""
+
+        url_base = self._client()
         try:
             async with httpx.AsyncClient(timeout=30) as client:
-                if selected:
-                    if len(selected) == 1:
-                        url = self._client() + "/sendPhoto"
-                        with open(selected[0], "rb") as fh:
-                            r = await client.post(
-                                url,
-                                data={"chat_id": chat_id, "caption": caption},
-                                files={"photo": (Path(selected[0]).name, fh)},
-                            )
-                    else:
-                        url = self._client() + "/sendMediaGroup"
-                        handles = [open(p, "rb") for p in selected]
-                        try:
-                            media_items = []
-                            files = {}
-                            for i, p in enumerate(selected):
-                                media_items.append(
-                                    {"type": "photo", "media": f"attach://photo{i}"}
-                                )
-                                files[f"photo{i}"] = (Path(p).name, handles[i])
-                            r = await client.post(
-                                url,
-                                data={"chat_id": chat_id, "media": json.dumps(media_items)},
-                                files=files,
-                            )
-                        finally:
-                            for h in handles:
-                                h.close()
+                if not selected:
+                    r = await client.post(
+                        url_base + "/sendMessage",
+                        json={"chat_id": chat_id, "text": caption},
+                    )
+                elif len(selected) == 1:
+                    with open(selected[0], "rb") as fh:
+                        r = await client.post(
+                            url_base + "/sendPhoto",
+                            data={"chat_id": chat_id, "caption": caption},
+                            files={"photo": (Path(selected[0]).name, fh)},
+                        )
                 else:
-                    url = self._client() + "/sendMessage"
-                    r = await client.post(url, json={"chat_id": chat_id, "text": draft.content})
-            if r.status_code == 429:
-                return PublishResult(success=False, error="rate limited (429)", status_hint="retry")
-            if r.status_code >= 400:
-                return PublishResult(success=False, error=r.text[:300], status_hint="failed")
-            msg = r.json().get("result", {})
-            return PublishResult(
-                success=True,
-                external_id=str(msg.get("message_id", "")),
-                url="",
-                status_hint="published",
-                degraded=degraded,
-            )
+                    r = await self._post_album(
+                        client, url_base, chat_id, selected, caption
+                    )
         except httpx.HTTPError as exc:
             return PublishResult(
                 success=False, error=f"network error: {exc}", status_hint="failed"
             )
+
+        if r.status_code == 429:
+            return PublishResult(success=False, error="rate limited (429)", status_hint="retry")
+        if r.status_code >= 400:
+            return PublishResult(success=False, error=r.text[:300], status_hint="failed")
+        msg = r.json().get("result", {})
+        return PublishResult(
+            success=True,
+            external_id=str(msg.get("message_id", "")),
+            url="",
+            status_hint="published",
+            degraded=degraded,
+            degraded_reason=note,
+        )
+
+    async def _post_album(self, client, url_base, chat_id, selected, caption):
+        """Send 2-10 photos as a media group.
+
+        The caption rides on the first media item — Telegram shows it as the
+        album caption. Omit it entirely (as the old code did) and the album goes
+        out with no text, a silent drop ADR-104 exists to prevent.
+        """
+        handles = [open(p, "rb") for p in selected]
+        try:
+            media_items = []
+            files = {}
+            for i, p in enumerate(selected):
+                media_items.append({"type": "photo", "media": f"attach://photo{i}"})
+                files[f"photo{i}"] = (Path(p).name, handles[i])
+            if caption:
+                media_items[0]["caption"] = caption
+            return await client.post(
+                url_base + "/sendMediaGroup",
+                data={"chat_id": chat_id, "media": json.dumps(media_items)},
+                files=files,
+            )
+        finally:
+            for h in handles:
+                h.close()

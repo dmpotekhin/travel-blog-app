@@ -15,12 +15,12 @@ caller — see :class:`PublishService`.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 from core.config import Config, get_secrets
 from core.database import Database
-from core.models import Draft, Publication
+from core.models import Draft
 
 
 @dataclass
@@ -37,6 +37,10 @@ class PublishResult:
     #: True when the platform could only honour part of the media/caption — the
     #: post still went out, but degraded (F7). Surfaced by the API + structured log.
     degraded: bool = False
+    #: Human-readable reason the post degraded, e.g. "caption 2000 -> 1024"; empty
+    #: when ``degraded`` is False. Kept on the result so the service log can say
+    #: WHAT degraded instead of the empty/dead ``status_hint`` (ADR-104).
+    degraded_reason: str = ""
 
 
 #: Marked as a permanent, non-retryable failure on a Publication.
