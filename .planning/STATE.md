@@ -8,7 +8,7 @@
 - **Phase:** P12 — Final verification
 - **Status:** execute
 - **Current task:** P12 complete (Final verification — app.py FastAPI + cli.py CLI + scheduler daemon wiring; run.sh no longer gap) — verified (tests/test_api.py: 4 passed; full suite 35 passed; cli.py stats/tick smoke).
-- **Last updated:** 2026-08-28
+- **Last updated:** 2026-09-05
 
 ## Active Decisions
 
@@ -65,3 +65,9 @@
 - 2026-08-29 — execute: VibeCoding feature (F1-F7) complete — config/enum/DB (vibecoding_posts + CRUD + state machine), modules/vibecoding_generator.py (DeepSeek text + httpx image-gen + Pillow mock), modules/media.prepare_vibecoding_media, modules/publishers/vibecoding.VibeCodingPublisherService (honest auto/manual), scheduler.publish_vibecoding_due + cron job, UI (vibecoding_page, settings_page, dashboard tabs + VibeCoding KPI). Verified: tests/test_vibecoding.py 8 passed; full suite 49 passed.
 - 2026-08-29 — verify: coverage check passed — all F1-F7 requirement items covered (DB, generator, media, publisher, scheduler, UI, config); decisions D6-D10 verified; compile clean; security-review clean (no HIGH/MEDIUM). DoD accepted.
 - 2026-08-29 — execute: Content validation feature (G1-G7) complete — modules/validation_base.py (ValidationCheck/Result + helpers), modules/trip_validator.py (TripValidator), modules/vibecoding_validator.py (VibeCodingValidator), config blocks trip_guidelines/vibecoding_guidelines (soft gate block_non_compliant=false), scheduler _trip_gate/_vibe_gate + block logic in run_due/publish_vibecoding_due, UI checklists (ui/validation_view.py wired into Posts tab + VibeCoding page). Verified: tests/test_validators.py 10 passed; full suite 59 passed.
+- 2026-09-04 — execute: Architecture review (software-architect) — full audit written to docs/architecture-review-2026-09-04.md (F1-F11 findings).
+- 2026-09-04 — execute: ADR-101..105 implemented (config single-source; honest VK publishing; atomic publish claim CAS; honest media path/degraded; dead-code cleanup ~210 lines + publish-due fix + arch tests). Verified: full suite 80 passed. Pushed 258ae2b..b56ba8e.
+- 2026-09-04 — execute: simplify-code — 4 parallel reviewers (reuse/quality/efficiency/altitude) on the 5-ADR diff; findings aggregated into SAFE/CAREFUL/RISKY triage.
+- 2026-09-05 — execute: cleanup pass applied (telegram media-group caption fix + honest degraded reason threading; update_publication_status dedup; state machine SCHEDULED->PROCESSING aligned with claim; _platform_enabled fail-safe; app.py/cli.py publish enum filter). Commit 68ddf60.
+- 2026-09-05 — execute: code review (requesting-code-review) — 2 Important fixes applied (real Bot API response shapes: media-group array vs object; text-only regression test on the 1025..4096 band) + minors (defensive file handles, CLI dict output). Commit a84bd0b. Verified: full suite 81 passed. Pushed b56ba8e..a84bd0b.
+- 2026-09-05 — verify: simplification safety — deliberate no-op: `_load_config` duplication retained (ADR-101 test boundary); RISKY items (run_due parallelism, stringly-typed retryable migration, platform-filter-in-engine) deferred to owner decision. Only remaining: real automation of VK photos / FB media-group (optional, owner decision).
