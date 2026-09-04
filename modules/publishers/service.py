@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from core import models as m
 from core.database import Database
+from modules.publishers.base import PERMANENT_PREFIX
 from modules.publishers.registry import build_publisher
 
 
@@ -54,6 +55,9 @@ class PublishService:
         else:
             status = m.PublicationStatus.FAILED
             err = result.error
+            if not result.retryable:
+                # Permanent error: tell retry_failed not to requeue this one.
+                err = PERMANENT_PREFIX + result.error
 
         existing = await self.db.get_publication_by_platform(draft.city_id, draft.platform)
         if existing is not None:

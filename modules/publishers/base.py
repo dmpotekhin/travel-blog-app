@@ -31,6 +31,13 @@ class PublishResult:
     url: str = ""
     error: str = ""
     status_hint: str = ""
+    #: False for "don't retry" errors (e.g. bot config missing, invalid scope): a
+    #: future retry will not fix them, so ``retry_failed`` must not burn attempts.
+    retryable: bool = True
+
+
+#: Marked as a permanent, non-retryable failure on a Publication.
+PERMANENT_PREFIX = "[permanent] "
 
 
 class BasePublisher(ABC):

@@ -31,9 +31,19 @@ class VKPublisher(BasePublisher):
 
     async def publish(self, draft, media_paths=None):
         if not self.key_configured:
-            return PublishResult(success=False, error="vk not configured (token/group_id missing)", status_hint="failed")
+            return PublishResult(
+                success=False,
+                retryable=False,
+                error="vk not configured (token/group_id missing)",
+                status_hint="failed",
+            )
         if media_paths:
-            return PublishResult(success=False, error="vk photo upload not automated yet; manual", status_hint="manual")
+            return PublishResult(
+                success=False,
+                manual=True,
+                error="vk photo upload not automated yet; do it manually",
+                status_hint="manual",
+            )
         owner = f"-{self.config.vk.group_id}"
         params = {
             "owner_id": owner,

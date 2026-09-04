@@ -26,7 +26,7 @@ class TelegramPublisher(BasePublisher):
 
     async def publish(self, draft, media_paths=None):
         if not self.key_configured:
-            return PublishResult(success=False, error="telegram not configured (token/chat_id missing)", status_hint="failed")
+            return PublishResult(success=False, retryable=False, error="telegram not configured (token/chat_id missing)", status_hint="failed")
         chat_id = self.config.telegram.chat_id
         media_paths = media_paths or []
         try:

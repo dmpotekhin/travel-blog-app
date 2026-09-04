@@ -25,6 +25,7 @@ from loguru import logger
 
 from core import models as m
 from core.database import Database
+from modules.publishers.base import PERMANENT_PREFIX
 from modules.publishers.registry import MANUAL_PLATFORMS
 from modules.publishers.service import PublishService
 from modules.publishers.vibecoding import VibeCodingPublisherService
@@ -91,6 +92,19 @@ class Scheduler:
         return slot
 
     # -- planning ---------------------------------------------------------
+    def _platform_enabled(self, platform: str) -> bool:
+        """Whether ``platform`` is enabled in ``config.publishing`` (F2).
+
+        ``publishing.*`` flags were dead: the engine generated drafts for all
+        platforms and plan() scheduled every one of them. Now plan() skips a
+        platform that is explicitly disabled (``publishing.<platform>: false``).
+        """
+        guard = getattr(self.config, "publishing", None)
+        if guard is None:
+            return True
+        # Reuse the same semantics BasePublisher.enabled uses: missing flag -> on.
+        return bool(getattr(guard, platform, True))
+
     async def plan(self, limit: int = 20) -> List[m.Publication]:
         """Create publication rows for approved drafts that have none yet."""
         now = dt.datetime.now(UTC)
@@ -103,6 +117,8 @@ class Scheduler:
         for draft in drafts:
             if await self.db.get_publication_by_platform(draft.city_id, draft.platform):
                 continue  # already planned
+            if not self._platform_enabled(draft.platform):
+                continue  # publishing.<platform> is false — never auto-publish it (F2)
             if draft.platform in MANUAL_PLATFORMS:
                 status = m.PublicationStatus.MANUAL
                 scheduled_at = None
@@ -202,6 +218,10 @@ class Scheduler:
             m.PublicationStatus.FAILED.value
         ):
             if pub.retry_count >= max_attempts:
+                continue
+            if pub.error_message.startswith(PERMANENT_PREFIX):
+                # Permanent error (bad config, invalid scope): a retry will not fix
+                # it. Leave FAILED and never burn attempt budget on it (ADR-102).
                 continue
             delay = base_delay * (2 ** pub.retry_count) if exp else base_delay
             next_at = now + dt.timedelta(seconds=delay)
