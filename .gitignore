@@ -23,6 +23,9 @@ media_ready/
 *.sqlite3
 .graphite_cache
 
+# Rendered carousels (regenerate with: cli.py carousel render --job-id N)
+public/carousels/
+
 # Browser automation
 geckodriver.log
 selenium/
