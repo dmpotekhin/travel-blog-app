@@ -117,6 +117,37 @@ DeepSeek / детерминированный mock; `local_vlm` — зарезе
 (`draft → approved → archived`); жёсткий гейт перед платформенным контентом включается
 флагом `visual_narrative.require_approval`.
 
+**Tri-Face Carousel Factory (P15).** Универсальный движок каруселей для трёх вертикалей —
+**Travel / QA / Vibecoding**. Вход: URL статьи или GitHub (репозиторий, issue, PR,
+discussion, release). Выход: 6 слайдов **768×1376 JPG** (9:16) под TikTok и Instagram.
+
+Конвейер из десяти стадий: `SOURCE → SOURCE RESOLVER → VERTICAL DETECTION → RESEARCH
+CONTEXT → HOOK ENGINE → NARRATIVE ENGINE → SLIDE PLANNER → HYBRID RENDERER → QA →
+DRAFT → HUMAN APPROVAL → UPLOAD-POST → ANALYTICS → LEARNINGS → NEXT RECOMMENDATION`.
+
+Работает как отдельным контуром, так и через API, CLI и вкладку «🎠 Carousels», не меняя
+существующий travel-пайплайн: модели — фасады над `core/models.py`, SQL — только в
+`core/database.py`, 10 новых таблиц создаются аддитивно (`CREATE ... IF NOT EXISTS`).
+
+| Принцип | Как реализовано |
+|---------|-----------------|
+| Точность важнее красоты | Текст, код, метрики и диаграммы рендерит Pillow по плану; Gemini — только фон/иллюстрации и только при ключе из env |
+| Никаких выдуманных фактов | Каждый слайд проверяется fact-guard'ом против контекста источника; нехватка данных → `low_confidence` и ручное уточнение |
+| Платформенные правила | Текст не заходит в нижние 20% слайда (UI-оверлеи TikTok); формат только JPG; у каждого слайда alt-текст и accessibility-проверки |
+| Human-in-the-loop | Публикация требует одобрения; автономия включается **двумя** переключателями (`autonomy.mode=full_autonomous` **и** `require_human_approval: false`), dry-run публикует в статус `manual` |
+| Честная аналитика | Метрики только те, что вернул провайдер: пустой ответ остаётся пустым. Score — взвешенная сумма rate-метрик (сравнима между малым и большим аккаунтом); рекомендации строятся только на выборке ≥ `min_sample_size` |
+
+```bash
+# полный проход без сети (fixture вместо реального источника)
+python cli.py carousel create --source https://example.com/post --vertical travel
+python cli.py carousel research --job-id 1 --fixture ctx.json
+python cli.py carousel draft --job-id 1 && python cli.py carousel plan --job-id 1
+python cli.py carousel render --job-id 1 && python cli.py carousel verify --job-id 1
+python cli.py carousel submit --job-id 1 && python cli.py carousel queue
+python cli.py carousel approve --job-id 1 --by dmitry && python cli.py carousel publish --job-id 1
+python cli.py carousel collect --job-id 1 && python cli.py carousel score --job-id 1
+```
+
 > Подробный дизайн и решения по каждой фазе — в [`ARCHITECTURE.md`](ARCHITECTURE.md);
 > текущий статус фаз — в [`.planning/STATE.md`](.planning/STATE.md).
 

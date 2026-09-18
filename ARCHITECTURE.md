@@ -537,3 +537,74 @@ PLATFORM CONTENT
 Full suite passes: `pytest -q` → 130 passed (81 before the feature);
 `python -m compileall app.py cli.py core modules ui tests` → clean.
 
+## 16. Tri-Face Carousel Factory (feature P15, added 2026-09-18/19)
+
+Universal carousel engine for three verticals — **Travel / QA / Vibecoding** — fed by a URL
+or a GitHub object (repo / issue / PR / discussion / release) and producing six 768×1376 JPG
+slides for TikTok + Instagram.
+
+Pipeline: `SOURCE → SOURCE RESOLVER → VERTICAL DETECTION → RESEARCH CONTEXT → HOOK ENGINE →
+NARRATIVE ENGINE → SLIDE PLANNER → HYBRID RENDERER → QA → DRAFT → HUMAN APPROVAL →
+UPLOAD-POST → ANALYTICS → LEARNINGS → NEXT RECOMMENDATION`.
+
+### Decisions (recorded in the architecture register)
+
+- **Canonical models live in `core/models.py`; `modules/carousels/{enums,models}.py` are
+  re-export facades.** `core/database.py` must know the models, and importing `modules.*`
+  from `core.*` would create a cycle (same reason as ADR-106). All SQL stays in
+  `core/database.py`; `modules/carousels/database_helpers.py` only delegates.
+- **The state machine is a thin facade with the human-in-the-loop guard inside.** Two
+  switches are needed for autonomy — `autonomy.mode=full_autonomous` **and**
+  `require_human_approval: false`; anything else keeps a person in the loop.
+  `PublishNotApprovedError` is the refusal, mapped to 409 by the API.
+- **Every external service sits behind an abstraction:** `BaseSourceResolver` (URL over
+  httpx + stdlib HTML parsing, GitHub over REST/GraphQL, mock for dry runs),
+  `BaseSlideRenderer` (Pillow today), `BackgroundProvider` (gradient / source image /
+  Gemini with a stated reason), `BaseCarouselPublisher` (mock / Upload-Post),
+  `BaseMetricsCollector` (live / offline stand-in).
+- **Deterministic rendering.** Exact text, code, metrics and lists are painted by Pillow
+  from the slide plan; every image carries a sha256 and a `.layout.json` sidecar, and no
+  text may enter the bottom 20% of the slide (TikTok UI overlays).
+- **Facts stay traceable.** Slide claims are checked by the fact guard against the resolved
+  source context; the CTA slide is the only claim-free slide (its text comes from the
+  vertical profile). Thin sources produce `low_confidence` and a manual follow-up instead of
+  invented content.
+- **Publishing is idempotent per `(request_id, platform)`** (one Upload-Post request id can
+  cover two platforms), enforced by the partial unique index
+  `idx_carousel_publications_request_id`; a repeated publish reuses the stored rows.
+  Dry-run writes `PublicationStatus.MANUAL` and uploads nothing.
+- **Analytics reads, never guesses.** `PlatformMetrics.is_empty()` is a legitimate answer: an
+  empty provider response stays empty (no zeros, no averages, no "likely" numbers). The
+  carousel score is a weighted sum of **rates** (comparable across account sizes) with the
+  weight of a missing metric redistributed, and it is single-sourced — `cohort_for(outcomes,
+  job_id)` always excludes the carousel being scored, so the score endpoint and the learnings
+  refresh can never disagree.
+- **Learnings aggregate only `published` jobs that actually returned metrics**, and only
+  groups with ≥ `min_sample_size` produce recommendations; no ML, no invented numbers.
+
+### Files
+
+- `core/models.py` — carousel enums/models (`CarouselVertical`, `CarouselSourceType`,
+  `CarouselStatus`, `CarouselSlide`, `CarouselJob`, `CarouselPublication`, `CarouselMetric`,
+  `CarouselLearning`, `_CAROUSEL_TRANSITIONS`, `CAROUSEL_PUBLISHABLE_STATUSES`).
+- `core/database.py` — ten additive tables (`CREATE ... IF NOT EXISTS`) + indexes and their
+  CRUD; `modules/carousels/database_helpers.py` — delegation facade.
+- `modules/carousels/` — `service.py` (the ten stages as service methods),
+  `state_machine.py`, `vertical_profiles.py`, `fact_guard.py`, `sources/`, `hooks/`,
+  `narrative/planner.py`, `render/`, `publishing/`, `analytics/`.
+- `app.py` — carousel routes (create/status/research/narrative/slides/render/verify/submit/
+  approve/reject/publish/queue/publications/metrics/learnings/score).
+- `ui/carousel_page.py` + `ui/dashboard.py` — «🎠 Carousels» tab (Hub, pipeline, approval
+  queue, analytics, learnings). `cli.py carousel` — 18 actions, `--db`, `--fixture`.
+- `tests/test_carousel_{models,state_machine,database,service,sources,hooks,planner,
+  planning,render,rendering,publishing,approval,api,analytics,learnings,cli}.py`.
+
+### Verification
+
+`pytest -q` → **392 passed** (131 at baseline); `compileall app.py cli.py core modules ui
+tests` → clean; `scan_credentials.py --staged` clean before every commit. Beyond the unit
+suite: an offline CLI walk on an isolated DB reached `awaiting_approval → approved →
+published (manual)`, and a live end-to-end analytics run over real loopback HTTP (four
+carousels published to a local stand-in of `api.upload-post.com`) proved the honest-metrics
+path and caught the two-scores defect described above.
+
