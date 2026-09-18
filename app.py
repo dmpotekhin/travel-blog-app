@@ -170,9 +170,16 @@ async def city_storyboard(city_id: int) -> m.StoryboardBundle:
 
 
 @app.post("/api/cities/{city_id}/storyboard/generate")
-async def generate_city_storyboard(city_id: int, dry_run: bool = False) -> m.VisualNarrativeResult:
-    """Build the visual narrative; ``dry_run=true`` previews without persisting."""
-    return await _studio().generate(city_id, dry_run=dry_run or None)
+async def generate_city_storyboard(
+    city_id: int, dry_run: Optional[bool] = None
+) -> m.VisualNarrativeResult:
+    """Build the visual narrative for the city.
+
+    ``dry_run`` omitted -> inherit ``app.dry_run`` from config.yaml; an explicit
+    ``dry_run=false`` forces a real write even while the app runs in dry-run mode
+    (the query flag must never be silently swallowed by the config default).
+    """
+    return await _studio().generate(city_id, dry_run=dry_run)
 
 
 @app.put("/api/cities/{city_id}/storyboard")

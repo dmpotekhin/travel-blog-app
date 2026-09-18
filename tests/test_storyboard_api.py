@@ -164,3 +164,37 @@ def test_shot_order_must_match_the_storyboard(client) -> None:
 
     assert response.status_code == 422
     assert "shot_order_mismatch" in response.json()["issues"]
+
+
+def test_explicit_dry_run_false_is_not_swallowed_by_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: ``?dry_run=false`` must persist even when ``app.dry_run`` is true.
+
+    The flag used to be folded with ``or None``, so an explicit ``false`` collapsed
+    into ``None`` and the config default silently re-enabled the preview.
+    """
+    db_path = tmp_path / "api_dry.db"
+    city_id = _seed(db_path)
+    monkeypatch.setattr(database_module, "DEFAULT_DB_PATH", str(db_path))
+
+    def dry_config() -> Config:
+        cfg = Config()
+        cfg.app.dry_run = True  # the app itself runs in dry-run mode
+        cfg.visual_narrative.provider = "mock"
+        return cfg
+
+    monkeypatch.setattr(app_module, "_load_config", dry_config)
+    with TestClient(app_module.app) as test_client:
+        inherited = test_client.post(f"/api/cities/{city_id}/storyboard/generate")
+        assert inherited.status_code == 200
+        assert inherited.json()["dry_run"] is True
+        assert test_client.get(f"/api/cities/{city_id}/storyboard").status_code == 404
+
+        forced = test_client.post(
+            f"/api/cities/{city_id}/storyboard/generate", params={"dry_run": "false"}
+        )
+        assert forced.status_code == 200
+        assert forced.json()["dry_run"] is False
+        assert forced.json()["storyboard"]["id"] is not None
+        assert test_client.get(f"/api/cities/{city_id}/storyboard").status_code == 200
