@@ -8,7 +8,7 @@ sells a place, QA and Vibecoding sell a verified fact — hence
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Tuple
 
 from core.exceptions import CarouselError

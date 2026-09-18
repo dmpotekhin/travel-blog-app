@@ -197,31 +197,39 @@ async def _dispatch(args) -> dict:
                     for pub in bundle.publications
                 ]}
             if action == "metrics":
-                rows = await carousel.list_metrics(args.job_id)
+                metric_rows = await carousel.list_metrics(args.job_id)
                 return {"metrics": [
                     {"platform": row.platform, "metric": row.metric_name,
                      "value": row.metric_value, "raw": row.raw_value}
-                    for row in rows
+                    for row in metric_rows
                 ]}
             if action == "collect":
-                rows = await carousel.collect_metrics(args.job_id)
-                return {"job_id": args.job_id, "collected": len(rows), "metrics": [
+                metric_rows = await carousel.collect_metrics(args.job_id)
+                return {"job_id": args.job_id, "collected": len(metric_rows), "metrics": [
                     {"platform": row.platform, "metric": row.metric_name,
                      "value": row.metric_value, "raw": row.raw_value}
-                    for row in rows
+                    for row in metric_rows
                 ]}
             if action == "score":
                 score = await carousel.score_job(args.job_id)
-                return score.explain()
+                return {
+                    "job_id": args.job_id,
+                    "score": score.score,
+                    "basis": score.basis,
+                    "components": score.components,
+                    "sample_size": score.sample_size,
+                    "warnings": score.warnings,
+                    "summary": score.explain(),
+                }
             if action == "learnings":
-                rows = await carousel.list_learnings(
+                learning_rows = await carousel.list_learnings(
                     scope_type=args.scope or None, limit=args.limit
                 )
                 return {"learnings": [
                     {"scope": f"{row.scope_type.value}/{row.scope_value}",
                      "metric": row.metric_name, "value": row.metric_value,
                      "sample_size": row.sample_size, "confidence": row.confidence}
-                    for row in rows
+                    for row in learning_rows
                 ]}
             if action == "refresh":
                 written = await carousel.refresh_learnings(vertical=args.vertical or None)

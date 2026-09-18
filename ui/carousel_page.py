@@ -19,12 +19,13 @@ if _ROOT not in sys.path:
 
 import asyncio
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List
 
 import streamlit as st
 
 from core.config import Config, get_secrets
 from core.database import Database
+from core.models import CarouselSourceType, CarouselVertical
 
 #: the order a verified carousel walks through; every entry is a service method
 STEPS = (
@@ -145,14 +146,18 @@ def _render_hub() -> None:
     with st.form("carousel_new"):
         cols = st.columns([1, 3])
         source_type = cols[0].selectbox(
-            "Тип источника", ["url", "github", "manual", "mock"], key="cf_type"
+            "Тип источника",
+            [kind.value for kind in CarouselSourceType],
+            key="cf_type",
         )
         source_ref = cols[1].text_input(
             "Ссылка или референс", placeholder="https://example.com/article", key="cf_ref"
         )
         cols2 = st.columns([1, 3])
         vertical = cols2[0].selectbox(
-            "Вертикаль", ["auto", "travel", "qa", "vibecoding", "hybrid"], key="cf_vertical"
+            "Вертикаль",
+            ["auto", *(kind.value for kind in CarouselVertical)],
+            key="cf_vertical",
         )
         title = cols2[1].text_input("Заголовок (необязательно)", key="cf_title")
         submitted = st.form_submit_button("Создать карусель")
@@ -161,7 +166,8 @@ def _render_hub() -> None:
         if not source_ref.strip():
             st.warning("Нужна ссылка на источник — без неё исследовать нечего.")
         else:
-            job = _call(_create, source_type, source_ref.strip(), vertical, title)
+            picked_vertical = "" if vertical == "auto" else vertical
+            job = _call(_create, source_type, source_ref.strip(), picked_vertical, title)
             if job is not None:
                 st.success(f"Задача #{job.id} создана (статус {job.status.value}).")
                 st.session_state["cf_job_id"] = int(job.id or 0)
@@ -201,7 +207,7 @@ def _render_pipeline() -> None:
         if slides:
             columns = st.columns(3)
             for index, slide in enumerate(slides):
-                path = Path(str(getattr(slide, "image_path", "") or ""))
+                path = Path(str(getattr(slide, "final_image_path", "") or ""))
                 header = f"{index + 1}. {slide.slide_type.value} — {slide.headline}"
                 with columns[index % 3]:
                     st.caption(header)
@@ -229,7 +235,19 @@ def _render_pipeline() -> None:
     if cols[1].button("⛔ Отклонить", key="cf_reject"):
         if _call(_decide, job_id, False, who, note) is not None:
             st.rerun()
-    if cols[2].button("🚀 Опубликовать", key="cf_publish"):
+    # The gate is the service's own answer (state machine + autonomy config),
+    # never a status string re-implemented in the UI.
+    can_publish = bool(report and report.get("can_publish"))
+    if cols[2].button(
+        "🚀 Опубликовать",
+        key="cf_publish",
+        disabled=not can_publish,
+        help=(
+            "Доступно только для согласованной карусели — статус берётся из state machine."
+            if not can_publish
+            else "Отправить в Upload-Post (dry_run ничего не грузит наружу)."
+        ),
+    ):
         result = _call(_publish, job_id)
         if result is not None:
             st.success("Публикация принята (dry_run ничего не грузит наружу).")

@@ -72,6 +72,7 @@ class SolidGradientProvider(BaseCarouselImageProvider):
         bottom = tuple(int(channel * self.top_shade) for channel in accent)
         image = Image.new("RGB", (1, height))
         pixels = image.load()
+        assert pixels is not None  # a freshly created RGB image always has one
         for y in range(height):
             ratio = y / max(height - 1, 1)
             pixels[0, y] = tuple(

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Tuple
 
 from loguru import logger
 
@@ -296,9 +296,9 @@ class HookEngine:
         for fact in context.sourced_facts:
             if fact.text and fact.text not in lines:
                 lines.append(fact.text)
-        for fact in context.facts:
-            if fact and fact not in lines:
-                lines.append(fact)
+        for text in context.facts:
+            if text and text not in lines:
+                lines.append(text)
         return lines
 
     def generate(

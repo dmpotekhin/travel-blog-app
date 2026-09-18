@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 from loguru import logger
 from PIL import Image, ImageDraw
@@ -430,6 +430,7 @@ def _gradient(width: int, height: int, accent: str) -> Image.Image:
     light = tuple(int(channel * 0.55) for channel in accent_rgb)
     strip = Image.new("RGB", (1, height))
     pixels = strip.load()
+    assert pixels is not None  # a freshly created RGB image always has one
     for y in range(height):
         ratio = y / max(height - 1, 1)
         pixels[0, y] = tuple(

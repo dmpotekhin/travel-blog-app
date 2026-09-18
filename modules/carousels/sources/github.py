@@ -12,7 +12,6 @@ back flagged as low confidence instead of guessed.
 from typing import Any, Dict, List, Optional
 
 import httpx
-from loguru import logger
 
 from core.config import CarouselGithubSourceConfig
 from core.exceptions import SourceResolutionError
@@ -393,13 +392,13 @@ class GitHubSourceResolver(BaseSourceResolver):
         facts, sourced = self._text_facts(
             str(pull.get("title") or ""), str(pull.get("body") or ""), f"pr:{parsed.number}"
         )
-        metrics = [
+        candidates = [
             self._metric("additions", pull.get("additions"), "lines", "pull"),
             self._metric("deletions", pull.get("deletions"), "lines", "pull"),
             self._metric("changed_files", pull.get("changed_files"), "files", "pull"),
             self._metric("comments", pull.get("comments"), "comments", "pull"),
         ]
-        metrics = [metric for metric in metrics if metric is not None]
+        metrics: List[Metric] = [metric for metric in candidates if metric is not None]
 
         code: List[CodeSnippet] = []
         warnings: List[str] = []

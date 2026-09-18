@@ -92,7 +92,7 @@ def latest_metrics_per_platform(
         if current is None or (stamp and current.collected_at and stamp > current.collected_at):
             seen[key] = row
     merged: Dict[str, float] = {}
-    for (platform, name), row in seen.items():
+    for (_platform, name), row in seen.items():
         if name in ENGAGEMENT_METRICS or name in ("views", "reach", "impressions", "follows"):
             merged[name] = merged.get(name, 0.0) + float(row.metric_value)
         else:
@@ -157,9 +157,6 @@ class LearningStore:
         if not outcomes:
             return []
 
-        cohort_views = cohort_views_baseline(
-            [outcome.metrics.get("views", 0.0) for outcome in outcomes]
-        )
         groups: Dict[Tuple[CarouselLearningScope, str], List[Dict[str, float]]] = {}
         for outcome in outcomes:
             job_cohort_views, job_cohort_size = cohort_for(outcomes, outcome.job_id)

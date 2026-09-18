@@ -38,6 +38,7 @@ __all__ = [
     "CarouselVerificationStatus",
     "CarouselVertical",
     "HookCategory",
+    "PublicationStatus",
     "SLIDE_TYPE_ALIASES",
     "TECHNICAL_SLIDE_TYPES",
     "VISUAL_SLIDE_TYPES",

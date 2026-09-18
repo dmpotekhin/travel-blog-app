@@ -12,7 +12,7 @@ import httpx
 
 from core.config import CarouselGithubSourceConfig, CarouselSourcesConfig, CarouselUrlSourceConfig
 from core.exceptions import SourceResolutionError
-from core.models import GITHUB_SOURCE_TYPES, URL_SOURCE_TYPES, CarouselSourceType
+from core.models import GITHUB_SOURCE_TYPES, URL_SOURCE_TYPES
 
 from ..enums import resolve_source_type
 from .base import BaseSourceResolver

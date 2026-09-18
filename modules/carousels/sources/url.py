@@ -16,7 +16,6 @@ from core.models import (
     URL_SOURCE_TYPES,
     CarouselSourceContext,
     CarouselSourceType,
-    CarouselVertical,
     SourceFact,
     dump_json_obj,
 )

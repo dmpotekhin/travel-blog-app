@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -22,7 +22,6 @@ from core.models import (
     CarouselSlide,
     CarouselSlidePlan,
     CarouselSourceContext,
-    CarouselVertical,
     CodeSnippet,
     ImageAsset,
     Metric,
@@ -165,10 +164,10 @@ class SlidePlanner:
             if fact.text and fact.text not in seen:
                 seen.add(fact.text)
                 material.append((fact.text, fact.source_ref or "source"))
-        for fact in context.facts:
-            if fact and fact not in seen:
-                seen.add(fact)
-                material.append((fact, "source"))
+        for text in context.facts:
+            if text and text not in seen:
+                seen.add(text)
+                material.append((text, "source"))
         return material
 
     def _next(self) -> Optional[Tuple[str, str]]:

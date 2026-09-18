@@ -22,7 +22,6 @@ from core.database import Database, utcnow
 from core.exceptions import (
     CarouselError,
     NotFoundError,
-    PublishNotApprovedError,
     SourceResolutionError,
     StateTransitionError,
 )
@@ -101,6 +100,13 @@ def looks_like_url(value: str) -> bool:
     """Cheap check: does this reference look like a fetchable URL?"""
     text = (value or "").strip().lower()
     return text.startswith(("http://", "https://"))
+
+
+def _require_id(value: Optional[int], what: str) -> int:
+    """Row ids come from the database; a missing one is a bug, not a default."""
+    if value is None:
+        raise CarouselError(f"{what} has no id — it was never stored")
+    return value
 
 
 class CarouselFactory:
@@ -377,14 +383,12 @@ class CarouselFactory:
             "resolver": active.name,
         }
         if row is not None:
-            await repo.update_source(self.db, row.id, **audit)
+            await repo.update_source(self.db, _require_id(row.id, "carousel source"), **audit)
         else:
             await repo.add_source(
                 self.db,
-                CarouselSourceRecord(
-                    job_id=job_id,
-                    source_ref=source_ref,
-                    **audit,
+                CarouselSourceRecord.model_validate(
+                    {"job_id": job_id, "source_ref": source_ref, **audit}
                 ),
             )
 
@@ -549,7 +553,7 @@ class CarouselFactory:
             )
             await repo.update_carousel_slide(
                 self.db,
-                slide.id,
+                _require_id(slide.id, "carousel slide"),
                 final_image_path=result.path,
                 background_image_path=result.background_path,
                 verification_status=CarouselVerificationStatus.PENDING.value,
@@ -570,7 +574,6 @@ class CarouselFactory:
         if not slides:
             raise CarouselError("job has no slides to verify — run render_slides() first")
 
-        profile = profile_for(job.vertical)
         context = job.source_context()
         active_verifier = verifier or self.verifier()
 
@@ -619,7 +622,7 @@ class CarouselFactory:
             report = verifier.verify(slide, context=context, guard=guard)
             await repo.update_carousel_slide(
                 self.db,
-                slide.id,
+                _require_id(slide.id, "carousel slide"),
                 verification_status=report.status.value,
                 verification_issues_json=json.dumps(report.issues, ensure_ascii=False),
                 quality_score=report.quality_score,
@@ -657,7 +660,7 @@ class CarouselFactory:
                 attempt=attempt,
             )
             await repo.update_carousel_slide(
-                self.db, slide.id, regeneration_count=attempt, final_image_path=str(destination)
+                self.db, _require_id(slide.id, "carousel slide"), regeneration_count=attempt, final_image_path=str(destination)
             )
 
     # ------------------------------------------------------------------
@@ -872,7 +875,9 @@ class CarouselFactory:
                     )
                 )
             else:
-                updated = await repo.update_publication(self.db, previous.id, **fields)
+                updated = await repo.update_publication(
+                    self.db, _require_id(previous.id, "carousel publication"), **fields
+                )
                 stored.append(updated or previous)
         return stored
 
@@ -952,7 +957,7 @@ class CarouselFactory:
         Nothing is interpolated: a platform that reports no numbers produces a
         warning on the job, not a zero-filled metric row.
         """
-        job = await self.get_job(job_id)
+        await self.get_job(job_id)  # existence check: unknown job -> NotFoundError
         publications = await repo.list_publications(self.db, job_id=job_id)
         if not publications:
             raise CarouselError(
