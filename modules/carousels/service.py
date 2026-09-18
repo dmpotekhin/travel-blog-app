@@ -12,6 +12,7 @@ slides) and only gets facts from a resolver.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from loguru import logger
@@ -26,6 +27,8 @@ from core.models import (
     CarouselLearning,
     CarouselPublication,
     CarouselSlide,
+    CarouselSourceContext,
+    CarouselVerificationStatus,
     CarouselSourceRecord,
     CarouselStatus,
     CarouselVertical,
@@ -35,6 +38,15 @@ from . import database_helpers as repo
 from .enums import CarouselSourceType, enum_text, resolve_source_type
 from .hooks import HookEngine
 from .narrative import SlidePlanner, clip
+from .render import (
+    BaseSlideRenderer,
+    PillowSlideRenderer,
+    RenderedSlide,
+    SlideVerifier,
+    VerificationReport,
+    provider_for,
+)
+from .vertical_profiles import profile_for
 from .sources import (
     BaseSourceResolver,
     ResolveOptions,
@@ -443,6 +455,177 @@ class CarouselFactory:
                 if candidate.id == job.selected_hook_id:
                     return candidate
         return candidates[0] if candidates else None
+
+    # ------------------------------------------------------------------
+    # rendering + verification (Phase 4)
+    # ------------------------------------------------------------------
+
+    def renderer_for(self) -> BaseSlideRenderer:
+        """Renderer named by config (``pillow`` today; never a silent fallback)."""
+        name = (self.settings.renderer or "pillow").strip().lower()
+        if name == "pillow":
+            return PillowSlideRenderer(
+                background_provider=provider_for(self.settings.gemini, dry_run=self.settings.dry_run)
+            )
+        raise CarouselError(f"carousel renderer {name!r} is not implemented (use 'pillow')")
+
+    def verifier(self) -> SlideVerifier:
+        """Verifier bound to the configured canvas, safe zone and health gates."""
+        return SlideVerifier(
+            width=self.settings.resolution.width,
+            height=self.settings.resolution.height,
+            safe_zone_pixels=self.settings.bottom_safe_zone_pixels,
+            require_alt_text=self.settings.health.require_alt_text,
+            require_source_refs=self.settings.health.require_source_refs_for_facts,
+        )
+
+    def job_output_dir(self, job_id: int) -> Path:
+        """Where this job's JPGs live (``carousels.output_dir``/job_<id>)."""
+        return Path(self.settings.output_dir) / f"job_{job_id}"
+
+    async def render_slides(
+        self, job_id: int, *, renderer: Optional[BaseSlideRenderer] = None
+    ) -> CarouselBundle:
+        """Paint every planned slide into a 768x1376 JPG (status RENDERED)."""
+        job = await self.get_job(job_id)
+        slides = await repo.get_carousel_slides(self.db, job_id)
+        if not slides:
+            raise CarouselError("job has no slides to render — run plan_slides() first")
+
+        profile = profile_for(job.vertical)
+        context = job.source_context()
+        width = self.settings.resolution.width
+        height = self.settings.resolution.height
+        safe_zone = self.settings.bottom_safe_zone_pixels
+        active = renderer or self.renderer_for()
+
+        await self.transition(job_id, CarouselStatus.RENDERING)
+        output_dir = self.job_output_dir(job_id)
+        rendered: List[RenderedSlide] = []
+        for slide in slides:
+            destination = output_dir / f"slide_{slide.order:02d}.jpg"
+            result = await active.render_async(
+                slide,
+                profile=profile,
+                width=width,
+                height=height,
+                safe_zone_pixels=safe_zone,
+                destination=destination,
+                context=context,
+                attempt=slide.regeneration_count,
+            )
+            await repo.update_carousel_slide(
+                self.db,
+                slide.id,
+                final_image_path=result.path,
+                background_image_path=result.background_path,
+                verification_status=CarouselVerificationStatus.PENDING.value,
+                verification_issues_json=json.dumps(result.warnings, ensure_ascii=False),
+            )
+            rendered.append(result)
+
+        await self.transition(job_id, CarouselStatus.RENDERED)
+        logger.info("carousel job {}: rendered {} slides into {}", job_id, len(rendered), output_dir)
+        return await self.get_bundle(job_id)
+
+    async def verify_slides(
+        self, job_id: int, *, verifier: Optional[SlideVerifier] = None, renderer: Optional[BaseSlideRenderer] = None
+    ) -> List[VerificationReport]:
+        """Verify every rendered slide, regenerating failures a bounded number of times."""
+        job = await self.get_job(job_id)
+        slides = await repo.get_carousel_slides(self.db, job_id)
+        if not slides:
+            raise CarouselError("job has no slides to verify — run render_slides() first")
+
+        profile = profile_for(job.vertical)
+        context = job.source_context()
+        active_verifier = verifier or self.verifier()
+
+        await self.transition(job_id, CarouselStatus.VERIFYING)
+        reports = await self._verify_pass(active_verifier, slides, context)
+
+        attempts = 0
+        while (
+            any(not report.passed for report in reports)
+            and attempts < self.settings.max_regeneration_attempts
+        ):
+            attempts += 1
+            await self._regenerate(
+                job_id, [report.order for report in reports if not report.passed],
+                context=context, renderer=renderer or self.renderer_for(),
+            )
+            slides = await repo.get_carousel_slides(self.db, job_id)
+            reports = await self._verify_pass(active_verifier, slides, context)
+
+        failing = [report.order for report in reports if not report.passed]
+        if failing:
+            warnings = merge_warnings(
+                list(job.warnings),
+                [f"slides need revision after {attempts} regeneration attempt(s): {failing}"],
+            )
+            await self.update_job(job_id, warnings_json=json.dumps(warnings, ensure_ascii=False))
+            await self.transition(job_id, CarouselStatus.NEEDS_REVISION)
+            logger.warning("carousel job {}: slides {} failed verification", job_id, failing)
+        else:
+            await self.transition(job_id, CarouselStatus.VERIFIED)
+            logger.info("carousel job {}: all {} slides verified", job_id, len(reports))
+        return reports
+
+    async def _verify_pass(
+        self,
+        verifier: SlideVerifier,
+        slides: Sequence[CarouselSlide],
+        context: Optional[CarouselSourceContext],
+    ) -> List[VerificationReport]:
+        """Verify each slide and persist its per-slide outcome."""
+        from .fact_guard import FactGuard
+
+        guard = FactGuard(context) if context is not None else None
+        reports: List[VerificationReport] = []
+        for slide in slides:
+            report = verifier.verify(slide, context=context, guard=guard)
+            await repo.update_carousel_slide(
+                self.db,
+                slide.id,
+                verification_status=report.status.value,
+                verification_issues_json=json.dumps(report.issues, ensure_ascii=False),
+                quality_score=report.quality_score,
+            )
+            reports.append(report)
+        return reports
+
+    async def _regenerate(
+        self,
+        job_id: int,
+        orders: Sequence[int],
+        *,
+        context: Optional[CarouselSourceContext],
+        renderer: BaseSlideRenderer,
+    ) -> None:
+        """Re-render only the failing slides (targeted, not a full re-run)."""
+        job = await self.get_job(job_id)
+        profile = profile_for(job.vertical)
+        slides = await repo.get_carousel_slides(self.db, job_id)
+        width = self.settings.resolution.width
+        height = self.settings.resolution.height
+        for slide in slides:
+            if slide.order not in orders:
+                continue
+            attempt = slide.regeneration_count + 1
+            destination = Path(slide.final_image_path or self.job_output_dir(job_id) / f"slide_{slide.order:02d}.jpg")
+            await renderer.render_async(
+                slide,
+                profile=profile,
+                width=width,
+                height=height,
+                safe_zone_pixels=self.settings.bottom_safe_zone_pixels,
+                destination=destination,
+                context=context,
+                attempt=attempt,
+            )
+            await repo.update_carousel_slide(
+                self.db, slide.id, regeneration_count=attempt, final_image_path=str(destination)
+            )
 
     # ------------------------------------------------------------------
     # slides
