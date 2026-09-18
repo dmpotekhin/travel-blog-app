@@ -195,6 +195,48 @@ def test_verifier_passes_a_good_slide(tmp_path):
     assert report.checks["bottom_zone"] and report.checks["code_integrity"]
 
 
+def test_verifier_accepts_a_claim_free_cta(tmp_path):
+    """The CTA wording comes from the vertical profile — not a source claim."""
+    slide = CarouselSlide(
+        **slide_payload(
+            order=6,
+            slide_type=SlideType.CTA,
+            headline="Сохрани, если планируешь похожую поездку",
+            subheadline="",
+            body_text="",
+            bullets_json="[]",
+            source_refs_json="[]",
+            code_json="{}",
+        )
+    )
+    result = render(slide, tmp_path)
+    report = SlideVerifier(width=WIDTH, height=HEIGHT, safe_zone_pixels=SAFE).verify(
+        slide, path=Path(result.path), context=qa_context()
+    )
+    assert report.passed, report.issues
+
+
+def test_verifier_flags_a_cta_that_smuggles_a_claim(tmp_path):
+    slide = CarouselSlide(
+        **slide_payload(
+            order=6,
+            slide_type=SlideType.CTA,
+            headline="Сохрани пост",
+            subheadline="",
+            body_text="",
+            bullets_json=json.dumps(["Тест падал в 40% прогонов"]),
+            source_refs_json="[]",
+            code_json="{}",
+        )
+    )
+    result = render(slide, tmp_path)
+    report = SlideVerifier(width=WIDTH, height=HEIGHT, safe_zone_pixels=SAFE).verify(
+        slide, path=Path(result.path), context=qa_context()
+    )
+    assert not report.passed
+    assert any("CTA" in issue for issue in report.issues)
+
+
 def test_verifier_flags_a_wrong_size(tmp_path):
     slide = CarouselSlide(**slide_payload())
     result = render(slide, tmp_path)

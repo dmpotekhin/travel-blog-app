@@ -3,10 +3,12 @@
 from typing import List
 
 from core.models import (
+    CarouselHookCandidate,
     CarouselSourceContext,
     CarouselSourceType,
     CarouselVertical,
     CodeSnippet,
+    HookCategory,
     Metric,
     SourceFact,
 )
@@ -164,6 +166,34 @@ def test_bottom_zone_budget_is_respected():
         assert len(slide.headline) <= profile.max_headline_chars
         assert len(slide.body_text) <= profile.max_body_chars
         assert len(slide.bullets) <= profile.bullets_max
+
+
+def test_hero_hook_line_does_not_come_back_on_a_later_slide():
+    """A repeated sentence makes a carousel read as a loop — regression guard."""
+    facts = [
+        "Поезд Пекин — Сиань идёт около пяти часов.",
+        "Мы приехали в закрытый сезон, половина маршрута не работала.",
+        "Местные не платят чаевые в чайных, это не принято.",
+        "Сиань даёт терракотовую армию и ночной рынок.",
+        "Чэнду — это панды и медленный ритм города.",
+    ]
+    context = make_context(CarouselVertical.TRAVEL, facts)
+    hook = CarouselHookCandidate(
+        pattern="travel_closed_season",
+        category=HookCategory.SEASONALITY.value,
+        text=facts[1],
+        source_support=facts[1],
+        score=0.62,
+    )
+    result = SlidePlanner().plan(
+        context, vertical=CarouselVertical.TRAVEL, hook=hook, job_id=7
+    )
+    assert result.slides[0].headline == facts[1]
+    later_blocks = []
+    for slide in result.slides[1:]:
+        later_blocks.extend([slide.headline, slide.subheadline, slide.body_text])
+        later_blocks.extend(slide.bullets)
+    assert facts[1] not in later_blocks
 
 
 def test_thin_source_is_flagged_not_padded():

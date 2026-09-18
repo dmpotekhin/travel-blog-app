@@ -82,6 +82,8 @@ class SlidePlanner:
         self._guard_factory = guard_factory
         self._material: List[Tuple[str, str]] = []
         self._cursor = 0
+        #: indices of ``_material`` already used by a slide (no early repeats)
+        self._used: set = set()
         self._context: Optional[CarouselSourceContext] = None
         self._hook: Optional[CarouselHookCandidate] = None
         self._job_id: Optional[int] = None
@@ -102,9 +104,13 @@ class SlidePlanner:
         guard = self._guard_factory(context)
         self._material = self._collect_material(context)
         self._cursor = 0
+        self._used = set()
         self._context = context
         self._hook = hook
         self._job_id = job_id
+        # The hero slide quotes the chosen hook; that sentence must not come
+        # back on a later slide, or the carousel reads as a loop.
+        self._mark_used(hook.source_support if hook is not None else "")
 
         sequence = list(profile.slide_sequence)
         wanted = slide_count or profile.slide_count
@@ -166,22 +172,50 @@ class SlidePlanner:
         return material
 
     def _next(self) -> Optional[Tuple[str, str]]:
-        """Next unused fact, cycling (never invents text to fill a slide)."""
+        """Next fact not handed out yet; cycles only when everything is used.
+
+        Cycling is allowed (six slides, few facts) but a sentence never comes
+        back until the whole source has had its turn — carousels read as a loop
+        otherwise.
+        """
         if not self._material:
             return None
-        item = self._material[self._cursor % len(self._material)]
-        self._cursor += 1
-        return item
+        total = len(self._material)
+        for offset in range(total):
+            index = (self._cursor + offset) % total
+            if index not in self._used:
+                self._cursor = index + 1
+                self._used.add(index)
+                return self._material[index]
+        # everything used: start the cycle again, still in source order
+        index = self._cursor % total
+        self._cursor = index + 1
+        return self._material[index]
 
     def _pick(self, markers: Sequence[str]) -> Optional[Tuple[str, str]]:
-        """First unused fact that mentions any marker, else ``None``."""
-        for index in range(self._cursor, self._cursor + len(self._material)):
-            text, ref = self._material[index % len(self._material)]
+        """First fact mentioning any marker that was not used yet."""
+        total = len(self._material)
+        for offset in range(total):
+            index = (self._cursor + offset) % total
+            if index in self._used:
+                continue
+            text, ref = self._material[index]
             lowered = text.lower()
             if any(marker in lowered for marker in markers):
                 self._cursor = index + 1
+                self._used.add(index)
                 return text, ref
         return None
+
+    def _mark_used(self, text: str) -> None:
+        """Reserve a source line that is already spoken for (the hero hook)."""
+        needle = (text or "").strip()
+        if not needle:
+            return
+        for index, (candidate, _ref) in enumerate(self._material):
+            if candidate.strip() == needle:
+                self._used.add(index)
+                return
 
     def _few(self, count: int, markers: Optional[Sequence[str]] = None) -> List[Tuple[str, str]]:
         """Up to ``count`` facts (marker-matched first, then in order)."""

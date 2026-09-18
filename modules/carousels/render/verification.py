@@ -23,7 +23,12 @@ from loguru import logger
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from core.models import CarouselSlide, CarouselSourceContext, CarouselVerificationStatus
+from core.models import (
+    CarouselSlide,
+    CarouselSourceContext,
+    CarouselVerificationStatus,
+    SlideType,
+)
 
 from ..fact_guard import FactGuard
 from ..vertical_profiles import VerticalProfile
@@ -240,6 +245,14 @@ class SlideVerifier:
         if active is None:
             return
         claims = [slide.headline, slide.subheadline, slide.body_text, *slide.bullets]
+        if slide.slide_type is SlideType.CTA:
+            # The CTA carries no factual claim: its wording comes from the
+            # vertical profile. It must not smuggle one in through bullets.
+            checks["facts"] = True
+            if slide.bullets or slide.body_text:
+                checks["cta_claim_free"] = False
+                issues.append("CTA slide carries copy that would need a source")
+            return
         unsupported = active.unsupported_claims([claim for claim in claims if claim])
         checks["facts"] = not unsupported
         if unsupported:
