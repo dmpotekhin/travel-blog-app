@@ -5,9 +5,9 @@
 ## Current Position
 
 - **Milestone:** M1 — Foundation
-- **Phase:** P14 — Visual Narrative Studio
-- **Status:** verify
-- **Current task:** P14 complete (Visual Narrative Studio, ADR-106 — visual-narrative layer between AI photo analysis and platform content: beats, storyboard, alt-texts, crop/focus hints, pacing) — verified (tests/test_visual_narrative_studio.py, tests/test_storyboard_models.py, tests/test_storyboard_api.py; full suite 130 passed; compileall clean).
+- **Phase:** P15 — Tri-Face Carousel Factory
+- **Status:** execute
+- **Current task:** P15 in progress on branch `feature/tri-face-carousel-factory`. Phase 1 (core: enums/models/10 tables/state machine/approval audit/service) = commit 26d36f5; Phase 2 (URL+GitHub source resolvers behind BaseSourceResolver; service.research writes the source audit row) = 01b4b7e; Phase 3 (vertical profiles, fact guard, hook engine, slide planner → 6-slide SlidePlan, service.draft_narrative/plan_slides) = ce93e70; Phase 4 (Pillow renderer 768x1376 JPG + layout sidecar + per-slide verifier + targeted regeneration, service.render_slides/verify_slides) = a55eee0 — verified (full suite 323 passed; compileall clean; scan_credentials --staged clean on every commit). Next: Phase 5 approval + Upload-Post publishing + API endpoints.
 - **Last updated:** 2026-09-18
 
 ## Active Decisions
@@ -58,6 +58,9 @@
 - [x] ADR-106e: versioned storyboards (immutable history), edits to an approved storyboard demote it to draft, accessibility + cultural-sensitivity notes persisted.
 
 ## Recent Activity
+
+- 2026-09-18 — execute: P15 Tri-Face Carousel Factory, phases 1-4 (branch `feature/tri-face-carousel-factory`). Phase 1 `26d36f5`: carousel enums/models/SLIDE_TYPE_ALIASES, 10 additive tables + indexes, `CarouselJob` state machine + publish guard, approval audit (`approved_by`/`approved_at`), `modules/carousels/service.py` + DB-helper facade (all SQL stays in `core/database.py`). Phase 2 `01b4b7e`: `modules/carousels/sources/` — `BaseSourceResolver`, URL resolver (httpx + stdlib HTML parsing, facts with source_ref/excerpt), GitHub resolver (REST repo/issue/PR/release + GraphQL discussion, metrics and diffs only from the API), detect (source type/content type/vertical), mock resolver, registry; `service.research()` stores the audited context. Phase 3 `ce93e70`: `vertical_profiles.py` (6-slide sequence per face + text budgets), `fact_guard.py` (normalised support check), `hooks/engine.py` (source-backed candidates only), `narrative/planner.py` (extractive SlidePlan, CTA is the only claim-free slide, per-slide alt text); `service.draft_narrative()`/`plan_slides()`. Phase 4 `a55eee0`: `render/` — font discovery, renderer contracts + layout sidecar, Pillow renderer (768x1376 JPG, contrast veil, wrapped text, verbatim code lines, verified metrics only, per-attempt shrink, hard bottom-safe-zone cutoff, sha256), background providers (solid gradient / source image / Gemini-with-reason), per-slide verifier (size, format, bottom zone, alt text, refs, font size, code integrity), `service.render_slides()`/`verify_slides()` with targeted regeneration.
+- 2026-09-18 — verify: P15 phases 1-4 — full suite 323 passed (131 at baseline; 192 new across carousel models/state machine/database/service/research/sources/hooks/planner/planning/render/rendering), `compileall app.py cli.py core modules ui tests` clean, `scan_credentials.py --staged` clean before each of the four commits. Split sync/async rendering after a real bug (async background provider driven from the sync render path) — `render_async()` awaits providers, sync `render()` paints a gradient and says so.
 
 - 2026-08-28 — state: initialized project state
 - 2026-08-28 — execute: P1 Foundation complete + smoke-verified
