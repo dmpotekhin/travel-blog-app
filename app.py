@@ -22,15 +22,27 @@ from __future__ import annotations
 
 import datetime as dt
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, Dict, List, Optional, Sequence
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from core import models as m
 from core.config import Config
 from core.database import Database
-from core.exceptions import NotFoundError, StateTransitionError, StoryboardValidationError
+from core.exceptions import (
+    CarouselError,
+    NotFoundError,
+    PublishNotApprovedError,
+    SourceResolutionError,
+    StateTransitionError,
+    StoryboardValidationError,
+)
+from core.models import CarouselSourceType, CarouselVertical
+from modules.carousels.publishing import CAROUSEL_PLATFORMS
+from modules.carousels.service import CarouselFactory
+from modules.carousels.sources import MockSourceResolver
 from modules.scheduler import Scheduler
 from modules.stats import StatsService
 from modules.visual_narrative_studio import (
@@ -206,6 +218,280 @@ async def approve_city_storyboard(
 @app.get("/api/storyboards/{storyboard_id}")
 async def get_storyboard(storyboard_id: int) -> m.StoryboardBundle:
     return await _studio().bundle_for_id(storyboard_id)
+
+
+# -- Tri-Face Carousel Factory (P15, Phase 5) -------------------------------
+
+CAROUSEL_SOURCE_TYPE_CHOICES = tuple(item.value for item in CarouselSourceType)
+CAROUSEL_VERTICAL_CHOICES = tuple(item.value for item in CarouselVertical)
+CAROUSEL_PLATFORM_CHOICES = tuple(CAROUSEL_PLATFORMS)
+
+
+def _carousel() -> CarouselFactory:
+    """Factory bound to the API's single Database connection."""
+    return CarouselFactory(app.state.db, app.state.config)
+
+
+def _carousel_source_type(value: str) -> CarouselSourceType:
+    try:
+        return CarouselSourceType(str(value).strip().lower())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown source_type {value!r}; allowed: {', '.join(CAROUSEL_SOURCE_TYPE_CHOICES)}",
+        ) from exc
+
+
+def _carousel_vertical(value: Optional[str]) -> Optional[CarouselVertical]:
+    if value is None or not str(value).strip():
+        return None
+    try:
+        return CarouselVertical(str(value).strip().lower())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown vertical {value!r}; allowed: {', '.join(CAROUSEL_VERTICAL_CHOICES)}",
+        ) from exc
+
+
+def _carousel_platforms(values: Optional[Sequence[str]]) -> Optional[List[str]]:
+    if not values:
+        return None
+    cleaned = [str(item).strip().lower() for item in values if str(item).strip()]
+    unknown = [item for item in cleaned if item not in CAROUSEL_PLATFORM_CHOICES]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"unsupported platform(s) {', '.join(unknown)}; "
+                f"allowed: {', '.join(CAROUSEL_PLATFORM_CHOICES)}"
+            ),
+        )
+    return cleaned
+
+
+class CarouselJobCreateRequest(BaseModel):
+    source_type: str
+    source_ref: str
+    vertical: Optional[str] = None
+    title: str = ""
+    created_by: str = "api"
+    dry_run: Optional[bool] = None
+    platforms: Optional[List[str]] = None
+
+
+class CarouselResearchRequest(BaseModel):
+    resolver: Optional[str] = None
+    detect_vertical: bool = True
+
+
+class CarouselApprovalRequest(BaseModel):
+    approved_by: str = "human"
+    note: str = ""
+
+
+class CarouselRejectionRequest(BaseModel):
+    reason: str = ""
+    rejected_by: str = "human"
+
+
+class CarouselPublishRequest(BaseModel):
+    platforms: Optional[List[str]] = None
+
+
+@app.exception_handler(CarouselError)
+async def _carousel_error_handler(request: Request, exc: CarouselError) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"detail": str(exc), "code": exc.code})
+
+
+@app.exception_handler(SourceResolutionError)
+async def _source_resolution_handler(request: Request, exc: SourceResolutionError) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc), "code": exc.code})
+
+
+@app.exception_handler(PublishNotApprovedError)
+async def _publish_gate_handler(request: Request, exc: PublishNotApprovedError) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(exc), "code": exc.code})
+
+
+@app.get("/api/carousels/jobs")
+async def list_carousel_jobs(
+    status: Optional[str] = None,
+    vertical: Optional[str] = None,
+    source_type: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Jobs newest-first; filters mirror the factory's ``list_jobs``."""
+    jobs = await _carousel().list_jobs(
+        status=status, vertical=vertical, source_type=source_type, limit=limit
+    )
+    return {
+        "items": [_job_payload(job) for job in jobs],
+        "count": len(jobs),
+    }
+
+
+def _job_payload(job: m.CarouselJob) -> Dict[str, Any]:
+    payload = job.model_dump(mode="json")
+    payload["job_id"] = job.id
+    #: parsed list (the stored column is a raw JSON string) — the UI/queue read this
+    payload["warnings"] = list(job.warnings)
+    return payload
+
+
+def _bundle_payload(bundle: m.CarouselBundle) -> Dict[str, Any]:
+    """One shape for every carousel step: job (+parsed warnings), slides, publications."""
+    return {
+        "job": _job_payload(bundle.job),
+        "slides": [slide.model_dump(mode="json") for slide in bundle.slides],
+        "hooks": [hook.model_dump(mode="json") for hook in bundle.hooks],
+        "publications": [item.model_dump(mode="json") for item in bundle.publications],
+        "issues": list(bundle.issues),
+    }
+@app.post("/api/carousels/jobs", status_code=201)
+async def create_carousel_job(payload: CarouselJobCreateRequest) -> Dict[str, Any]:
+    """Register a job for a URL or GitHub reference (nothing is fetched here)."""
+    job = await _carousel().create_job(
+        source_type=_carousel_source_type(payload.source_type),
+        source_ref=payload.source_ref,
+        vertical=_carousel_vertical(payload.vertical),
+        title=payload.title,
+        created_by=payload.created_by,
+        dry_run=payload.dry_run,
+        platforms=_carousel_platforms(payload.platforms),
+    )
+    return _job_payload(job)
+
+
+@app.get("/api/carousels/jobs/{job_id}")
+async def get_carousel_job(job_id: int) -> Dict[str, Any]:
+    """Job + slides + hooks + publications (+ verification issues)."""
+    return _bundle_payload(await _carousel().get_bundle(job_id))
+
+
+@app.get("/api/carousels/jobs/{job_id}/status")
+async def carousel_job_status(job_id: int) -> Dict[str, Any]:
+    """Where the job stands, whether it may publish, and the next path step."""
+    return await _carousel().status_report(job_id)
+
+
+@app.post("/api/carousels/jobs/{job_id}/research")
+async def research_carousel_job(
+    job_id: int, payload: Optional[CarouselResearchRequest] = None
+) -> Dict[str, Any]:
+    """Read the source into an audited context (``resolver="mock"`` stays offline)."""
+    factory = _carousel()
+    request = payload or CarouselResearchRequest()
+    resolver = None
+    if request.resolver and request.resolver.strip().lower() == "mock":
+        resolver = MockSourceResolver()
+    await factory.research(
+        job_id, resolver=resolver, detect_vertical=request.detect_vertical
+    )
+    return _bundle_payload(await factory.get_bundle(job_id))
+
+
+@app.post("/api/carousels/jobs/{job_id}/narrative")
+async def draft_carousel_narrative(job_id: int) -> Dict[str, Any]:
+    """Pick a hook and draft the narrative (facts stay traceable)."""
+    factory = _carousel()
+    await factory.draft_narrative(job_id)
+    return _bundle_payload(await factory.get_bundle(job_id))
+
+
+@app.post("/api/carousels/jobs/{job_id}/slides")
+async def plan_carousel_slides(job_id: int) -> Dict[str, Any]:
+    """Turn the narrative into the six-slide plan (768x1376, bottom-safe)."""
+    factory = _carousel()
+    await factory.plan_slides(job_id)
+    return _bundle_payload(await factory.get_bundle(job_id))
+
+
+@app.post("/api/carousels/jobs/{job_id}/render")
+async def render_carousel_slides(job_id: int) -> Dict[str, Any]:
+    """Paint every slide into a deterministic 768x1376 JPG."""
+    factory = _carousel()
+    await factory.render_slides(job_id)
+    return _bundle_payload(await factory.get_bundle(job_id))
+
+
+@app.post("/api/carousels/jobs/{job_id}/verify")
+async def verify_carousel_slides(job_id: int) -> Dict[str, Any]:
+    """Re-open the rendered files and check size, format, safe zone, alt text."""
+    factory = _carousel()
+    reports = await factory.verify_slides(job_id)
+    bundle = await factory.get_bundle(job_id)
+    return {
+        "job": _job_payload(bundle.job),
+        "reports": [report.model_dump(mode="json") for report in reports],
+        "issues": bundle.issues,
+    }
+
+
+@app.post("/api/carousels/jobs/{job_id}/approve")
+async def approve_carousel_job(
+    job_id: int, payload: Optional[CarouselApprovalRequest] = None
+) -> Dict[str, Any]:
+    """Human gate: only an approved carousel may reach TikTok or Instagram."""
+    request = payload or CarouselApprovalRequest()
+    factory = _carousel()
+    await factory.approve(job_id, approved_by=request.approved_by, note=request.note)
+    return _bundle_payload(await factory.get_bundle(job_id))
+
+
+@app.post("/api/carousels/jobs/{job_id}/reject")
+async def reject_carousel_job(
+    job_id: int, payload: Optional[CarouselRejectionRequest] = None
+) -> Dict[str, Any]:
+    """Send the carousel back to revision with the reviewer's reason attached."""
+    request = payload or CarouselRejectionRequest()
+    if not request.reason.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="rejection requires a reason (a silent reject teaches the factory nothing)",
+        )
+    factory = _carousel()
+    await factory.reject(job_id, reason=request.reason, rejected_by=request.rejected_by)
+    return _bundle_payload(await factory.get_bundle(job_id))
+
+
+@app.post("/api/carousels/jobs/{job_id}/submit")
+async def submit_carousel_for_approval(job_id: int) -> Dict[str, Any]:
+    """Move a verified carousel into the human queue (auto-approves only in full autonomy)."""
+    factory = _carousel()
+    await factory.submit_for_approval(job_id)
+    return _bundle_payload(await factory.get_bundle(job_id))
+
+
+@app.get("/api/carousels/queue")
+async def carousel_approval_queue(limit: int = 50) -> Dict[str, Any]:
+    """Everything a human still has to look at (awaiting approval first)."""
+    items = await _carousel().approval_queue(limit=limit)
+    return {"items": [_job_payload(job) for job in items], "count": len(items)}
+
+
+@app.post("/api/carousels/jobs/{job_id}/publish")
+async def publish_carousel_job(
+    job_id: int, payload: Optional[CarouselPublishRequest] = None
+) -> Dict[str, Any]:
+    """Upload the approved carousel (Upload-Post); supervised mode returns 409."""
+    request = payload or CarouselPublishRequest()
+    bundle = await _carousel().publish(
+        job_id, platforms=_carousel_platforms(request.platforms)
+    )
+    return _bundle_payload(bundle)
+
+
+@app.get("/api/carousels/jobs/{job_id}/publications")
+async def list_carousel_publications(job_id: int) -> Dict[str, Any]:
+    """One row per platform: status, request_id, post URL, error, raw response."""
+    factory = _carousel()
+    await factory.get_job(job_id)
+    publications = await factory.list_publications(job_id)
+    return {
+        "items": [publication.model_dump(mode="json") for publication in publications],
+        "count": len(publications),
+    }
 
 
 if __name__ == "__main__":

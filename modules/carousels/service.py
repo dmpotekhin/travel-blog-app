@@ -17,9 +17,15 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 from loguru import logger
 
-from core.config import CarouselConfig, Config
+from core.config import CarouselConfig, Config, get_secrets
 from core.database import Database, utcnow
-from core.exceptions import CarouselError, NotFoundError, SourceResolutionError
+from core.exceptions import (
+    CarouselError,
+    NotFoundError,
+    PublishNotApprovedError,
+    SourceResolutionError,
+    StateTransitionError,
+)
 from core.models import (
     CarouselBundle,
     CarouselHookCandidate,
@@ -32,6 +38,7 @@ from core.models import (
     CarouselSourceRecord,
     CarouselStatus,
     CarouselVertical,
+    PublicationStatus,
 )
 
 from . import database_helpers as repo
@@ -52,6 +59,14 @@ from .sources import (
     ResolveOptions,
     merge_warnings,
     source_resolver_for,
+)
+from .publishing import (
+    CAROUSEL_PLATFORMS,
+    BaseCarouselPublisher,
+    MockCarouselPublisher,
+    PublishRequest,
+    PublishResult,
+    publisher_for,
 )
 from .state_machine import (
     can_publish,
@@ -80,10 +95,17 @@ def looks_like_url(value: str) -> bool:
 class CarouselFactory:
     """Job lifecycle for the Tri-Face Carousel Factory (Travel/QA/Vibecoding)."""
 
-    def __init__(self, db: Database, config: Optional[Config] = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        config: Optional[Config] = None,
+        secrets: Optional[Any] = None,
+    ) -> None:
         self.db = db
         self.config = config or Config()
         self.settings: CarouselConfig = self.config.carousels
+        #: Secrets come from .env only (never from config.yaml); injectable for tests.
+        self.secrets = secrets if secrets is not None else get_secrets()
 
     # ------------------------------------------------------------------
     # config accessors
@@ -651,14 +673,61 @@ class CarouselFactory:
     # approval gate (shared by API, UI and CLI)
     # ------------------------------------------------------------------
 
-    async def approve(self, job_id: int, *, approved_by: str = "human") -> CarouselJob:
+    async def submit_for_approval(self, job_id: int) -> CarouselJob:
+        """Queue a verified job for a human (or auto-approve it).
+
+        ``full_autonomous`` *and* ``require_human_approval: false`` is the only
+        path that skips the human — and it leaves ``auto:*`` in the audit
+        trail, so an autopilot approval is always visible afterwards.
+        """
+        job = await self.get_job(job_id)
+        if job.status is not CarouselStatus.VERIFIED:
+            raise StateTransitionError(
+                f"Карусель {job_id} не прошла verification (статус "
+                f"{status_value(job.status)}) — сначала render_slides() и verify_slides()."
+            )
+        slides = await repo.get_carousel_slides(self.db, job_id)
+        failed = [
+            slide
+            for slide in slides
+            if slide.verification_status is not CarouselVerificationStatus.PASSED
+        ]
+        if failed:
+            orders = ", ".join(str(slide.order) for slide in failed)
+            raise CarouselError(
+                f"{len(failed)} слайд(ов) не прошли проверку (слайды {orders}) — отправка на "
+                "approval отменена."
+            )
+
+        if self.should_auto_approve():
+            await self._append_warning(
+                job_id, "full_autonomous mode: auto-approved without a human check"
+            )
+            return await self.approve(
+                job_id, approved_by="auto:full_autonomous", note="auto-approved by config"
+            )
+
+        updated = await self.transition(job_id, CarouselStatus.AWAITING_APPROVAL)
+        logger.info("carousel job {} submitted for approval", job_id)
+        return updated
+
+    async def approve(
+        self, job_id: int, *, approved_by: str = "human", note: str = ""
+    ) -> CarouselJob:
         """Human approval (or an explicit ``full_autonomous`` auto-approval).
 
         The transition is the record of approval; ``approved_by``/``approved_at``
         are the audit trail the UI shows in the Approval Queue.
         """
-        await self.get_job(job_id)  # 404/NotFound before the audit write
+        job = await self.get_job(job_id)
+        if job.status not in (CarouselStatus.VERIFIED, CarouselStatus.AWAITING_APPROVAL):
+            raise StateTransitionError(
+                f"Одобрить можно только карусель, прошедшую verification: сейчас статус "
+                f"{status_value(job.status)}."
+            )
         await self.update_job(job_id, approved_by=approved_by, approved_at=utcnow())
+        if note:
+            await self._append_warning(job_id, f"approval note: {note}")
         updated = await self.transition(job_id, CarouselStatus.APPROVED)
         logger.info("carousel job {} approved by {}", updated.id, approved_by)
         return updated
@@ -668,14 +737,16 @@ class CarouselFactory:
     ) -> CarouselJob:
         """Send a job back for revision (``needs_revision``) with a reason."""
         await self.get_job(job_id)
-        updates: Dict[str, Any] = {}
         if reason:
-            updates["error_message"] = reason
-        if updates:
-            await self.update_job(job_id, **updates)
+            await self.update_job(job_id, error_message=reason)
+            await self._append_warning(job_id, f"rejected by {rejected_by}: {reason}")
         updated = await self.transition(job_id, CarouselStatus.NEEDS_REVISION)
         logger.info("carousel job {} rejected by {}: {}", job_id, rejected_by, reason or "-")
         return updated
+
+    async def approval_queue(self, limit: int = 50) -> List[CarouselJob]:
+        """Jobs waiting for a human decision (the Approval Queue screen)."""
+        return await self.list_jobs(status=CarouselStatus.AWAITING_APPROVAL, limit=limit)
 
     async def ensure_publishable(self, job_id: int) -> CarouselJob:
         """Guard for the publisher: raises unless the job is ``approved``."""
@@ -687,6 +758,161 @@ class CarouselFactory:
         """True when the job may be published right now (no exception raised)."""
         job = await self.get_job(job_id)
         return can_publish(job)
+
+    # ------------------------------------------------------------------
+    # publishing
+    # ------------------------------------------------------------------
+
+    def publisher_for_job(self) -> BaseCarouselPublisher:
+        """The channel for this configuration (offline while ``dry_run``)."""
+        return publisher_for(self.settings, self.secrets)
+
+    async def list_publications(self, job_id: int) -> List[CarouselPublication]:
+        """Platform rows of one carousel (the audit trail of a publish)."""
+        return await repo.list_publications(self.db, job_id=job_id)
+
+    async def publish(
+        self,
+        job_id: int,
+        *,
+        publisher: Optional[BaseCarouselPublisher] = None,
+        platforms: Optional[Sequence[str]] = None,
+    ) -> CarouselBundle:
+        """Publish an approved carousel; never posts twice.
+
+        Rules (spec §13):
+        * only an ``approved`` job may be published — the guard raises
+          :class:`PublishNotApprovedError` otherwise;
+        * ``dry_run`` records the intent as ``MANUAL`` and uploads nothing;
+        * a job that is already ``published`` returns its stored rows instead of
+          a second upload.
+        """
+        job = await self.get_job(job_id)
+        if job.status is CarouselStatus.PUBLISHED:
+            await self._append_warning(
+                job_id, "already published: returning the stored publications"
+            )
+            return await self.get_bundle(job_id)
+        require_publish_allowed(job)
+
+        slides = await repo.get_carousel_slides(self.db, job_id)
+        if not slides:
+            raise CarouselError("нет слайдов для публикации — сначала render_slides()")
+        missing = [
+            slide.order
+            for slide in slides
+            if not (slide.final_image_path and Path(slide.final_image_path).is_file())
+        ]
+        if missing:
+            orders = ", ".join(str(order) for order in missing)
+            raise CarouselError(f"нет файлов слайдов {orders} — сначала render_slides()")
+
+        targets = list(platforms) if platforms else (job.target_platforms or list(CAROUSEL_PLATFORMS))
+        active = publisher or self.publisher_for_job()
+        is_dry = isinstance(active, MockCarouselPublisher) or self.dry_run
+
+        request = PublishRequest(
+            job_id=job_id,
+            title=job.title,
+            caption=job.caption,
+            platforms=targets,
+            slide_paths=[slide.final_image_path for slide in slides],
+            hashtags=list(job.hashtags),
+            privacy_level=self.settings.upload_post.privacy_level,
+            auto_add_music=self.settings.upload_post.auto_add_music,
+            async_upload=self.settings.upload_post.async_upload,
+            dry_run=is_dry,
+        )
+
+        if not is_dry:
+            await self.transition(job_id, CarouselStatus.PUBLISHING)
+        results: List[PublishResult] = await active.publish(request)
+        stored = await self._store_publications(job_id, results)
+        logger.info(
+            "carousel job {}: publish attempt dry_run={} results={}",
+            job_id,
+            is_dry,
+            {result.platform: result.status.value for result in results},
+        )
+        return await self._settle_publication(job_id, results, dry_run=is_dry, stored=stored)
+
+    async def _store_publications(
+        self, job_id: int, results: Sequence[PublishResult]
+    ) -> List[CarouselPublication]:
+        """Persist one row per platform; re-save the row that already exists."""
+        existing = {row.platform: row for row in await repo.list_publications(self.db, job_id)}
+        stored: List[CarouselPublication] = []
+        for result in results:
+            previous = existing.get(result.platform)
+            fields: Dict[str, Any] = {
+                "platform": result.platform,
+                "request_id": result.request_id,
+                "external_id": result.external_id,
+                "post_url": result.post_url,
+                "status": enum_text(result.status),
+                "published_at": utcnow() if result.status is PublicationStatus.PUBLISHED else None,
+                "error_message": result.error_message or result.note,
+                "raw_response_json": result.raw_response_json or "{}",
+            }
+            if previous is None:
+                stored.append(
+                    await repo.save_publication(
+                        self.db, CarouselPublication(job_id=job_id, **fields)
+                    )
+                )
+            else:
+                updated = await repo.update_publication(self.db, previous.id, **fields)
+                stored.append(updated or previous)
+        return stored
+
+    async def _settle_publication(
+        self,
+        job_id: int,
+        results: Sequence[PublishResult],
+        *,
+        dry_run: bool,
+        stored: Sequence[CarouselPublication],
+    ) -> CarouselBundle:
+        """Move the job to the status its publications actually justify."""
+        statuses = {result.status for result in results}
+        if dry_run:
+            await self._append_warning(
+                job_id,
+                "dry_run=True: публикации подготовлены, но никуда не загружены "
+                "(TikTok/Instagram не вызывались)",
+            )
+            return await self.get_bundle(job_id)
+
+        if statuses == {PublicationStatus.PUBLISHED}:
+            await self.transition(job_id, CarouselStatus.PUBLISHED)
+        elif statuses == {PublicationStatus.FAILED}:
+            message = "; ".join(
+                f"{result.platform}: {result.error_message}" for result in results
+            )
+            await self.update_job(job_id, error_message=message[:500])
+            await self.transition(job_id, CarouselStatus.FAILED)
+        else:
+            summary = ", ".join(
+                f"{result.platform}={result.status.value}" for result in results
+            )
+            await self._append_warning(
+                job_id,
+                f"публикация не завершена одномоментно ({summary}) — проверьте статус "
+                "публикаций перед повторной отправкой",
+            )
+        bundle = await self.get_bundle(job_id)
+        bundle.publications = list(stored) or bundle.publications
+        return bundle
+
+    async def _append_warning(self, job_id: int, warning: str) -> CarouselJob:
+        """Add one warning to the job (idempotent per text)."""
+        job = await self.get_job(job_id)
+        warnings = list(job.warnings)
+        if warning not in warnings:
+            warnings.append(warning)
+        return await self.update_job(
+            job_id, warnings_json=json.dumps(warnings, ensure_ascii=False)
+        )
 
     # ------------------------------------------------------------------
     # internal

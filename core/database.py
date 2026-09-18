@@ -13,7 +13,7 @@ import contextlib
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Union
 
 import aiosqlite
 
@@ -422,10 +422,10 @@ CREATE INDEX IF NOT EXISTS idx_carousel_metrics_lookup ON carousel_metrics(platf
 CREATE INDEX IF NOT EXISTS idx_carousel_learnings_scope ON carousel_learnings(scope_type, scope_value);
 CREATE INDEX IF NOT EXISTS idx_carousel_sources_job ON carousel_sources(job_id, source_type);
 
--- One published request_id == one post: retries must reuse it, never republish.
--- Partial index so not-yet-published rows ('' request_id) stay unlimited.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_carousel_publications_request_id
-    ON carousel_publications(request_id) WHERE request_id <> '';
+-- One published (request_id, platform) pair == one post: retries must reuse it,
+-- never republish. Partial index so not-yet-published rows ('' request_id) stay free.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_carousel_publications_request_platform
+    ON carousel_publications(request_id, platform) WHERE request_id <> '';
 
 -- Templates are versioned: the same name may exist in several versions.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_carousel_templates_name_version
@@ -602,8 +602,27 @@ class Database:
                 import asyncio
 
                 self._lock = asyncio.Lock()
+            await self._migrate_legacy_indexes()
         except Exception as exc:  # pragma: no cover - defensive
             raise DatabaseError(f"Failed to connect to DB {self.path}: {exc}", cause=exc) from exc
+
+    async def _migrate_legacy_indexes(self) -> None:
+        """Drop indexes that a later schema revision replaced.
+
+        Guarded by a read of ``sqlite_master`` so a normal startup issues no schema
+        write at all — writing on every boot is what makes a second process (the
+        dashboard, a dev server) refuse the connection with "table is locked".
+        """
+        legacy = "idx_carousel_publications_request_id"
+        row = await self._fetchone(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?", (legacy,)
+        )
+        if row is None:
+            return
+        conn = self._require_conn()
+        async with self._lock:
+            await conn.execute(f"DROP INDEX IF EXISTS {legacy}")
+            await conn.commit()
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -626,13 +645,13 @@ class Database:
             raise DatabaseError("Database not connected. Call connect() first.")
         return self._conn
 
-    async def _fetchone(self, sql: str, params: Iterator = ()) -> Optional[dict]:
+    async def _fetchone(self, sql: str, params: Iterable = ()) -> Optional[dict]:
         async with self._lock:
             cur = await self._conn.execute(sql, tuple(params))
             row = await cur.fetchone()
             return dict(row) if row else None
 
-    async def _fetchall(self, sql: str, params: Iterator = ()) -> List[dict]:
+    async def _fetchall(self, sql: str, params: Iterable = ()) -> List[dict]:
         async with self._lock:
             cur = await self._conn.execute(sql, tuple(params))
             rows = await cur.fetchall()
@@ -2116,13 +2135,17 @@ class Database:
     async def save_carousel_publication(
         self, publication: m.CarouselPublication
     ) -> m.CarouselPublication:
-        """Insert one platform row, idempotent by ``request_id``.
+        """Insert one platform row, idempotent by ``(request_id, platform)``.
 
-        Re-saving a known request_id returns the stored row: a retry of an async
-        upload must never create a second post.
+        Upload-Post answers a multi-platform upload with a *single* request_id, so
+        the request id identifies the upload rather than the post: the row key is
+        the pair. Re-saving a known pair returns the stored row — a retry must
+        never create a second post.
         """
         if publication.request_id:
-            existing = await self.get_publication_by_request_id(publication.request_id)
+            existing = await self.get_publication_by_request_id(
+                publication.request_id, platform=publication.platform
+            )
             if existing is not None:
                 return existing
         if publication.job_id is None:
@@ -2151,7 +2174,9 @@ class Database:
             )
         except (DuplicateError, aiosqlite.IntegrityError):
             stored = (
-                await self.get_publication_by_request_id(publication.request_id)
+                await self.get_publication_by_request_id(
+                    publication.request_id, platform=publication.platform
+                )
                 if publication.request_id
                 else None
             )
@@ -2170,14 +2195,23 @@ class Database:
             raise DatabaseError(f"Carousel publication {publication_id} not found after write")
         return publication
 
-    async def get_publication_by_request_id(self, request_id: str) -> Optional[m.CarouselPublication]:
-        """Look a publication up by the upload provider's request id."""
+    async def get_publication_by_request_id(
+        self, request_id: str, platform: Optional[str] = None
+    ) -> Optional[m.CarouselPublication]:
+        """Look a publication up by the upload provider's request id.
+
+        ``platform`` narrows the lookup: one multi-platform upload reports a single
+        request_id, so a request id alone may match several rows.
+        """
         if not request_id:
             return None
-        row = await self._fetchone(
-            "SELECT * FROM carousel_publications WHERE request_id = ? ORDER BY id DESC LIMIT 1",
-            (request_id,),
-        )
+        sql = "SELECT * FROM carousel_publications WHERE request_id = ?"
+        params: List = [request_id]
+        if platform:
+            sql += " AND platform = ?"
+            params.append(platform)
+        sql += " ORDER BY id DESC LIMIT 1"
+        row = await self._fetchone(sql, tuple(params))
         return _carousel_publication_from_row(row)
 
     async def list_carousel_publications(

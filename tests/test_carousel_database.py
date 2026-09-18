@@ -328,6 +328,38 @@ async def test_publications_for_two_platforms_are_kept_apart(db):
     assert {row.platform for row in rows} == {"tiktok", "instagram"}
 
 
+async def test_one_upload_request_id_covers_two_platform_rows(db):
+    """Regression (found by the Phase 5 E2E run): Upload-Post answers one
+    multi-platform upload with a single request_id. The row key must therefore be
+    (request_id, platform) — keyed on request_id alone the second platform
+    silently overwrote the first row and Instagram was never recorded."""
+    job = await _new_job(db)
+    first = await db.save_carousel_publication(
+        cm.CarouselPublication(
+            job_id=job.id, platform="tiktok", request_id="req-shared", status=ce.PublicationStatus.PROCESSING
+        )
+    )
+    second = await db.save_carousel_publication(
+        cm.CarouselPublication(
+            job_id=job.id,
+            platform="instagram",
+            request_id="req-shared",
+            status=ce.PublicationStatus.PROCESSING,
+        )
+    )
+    assert first.id != second.id
+
+    rows = await db.list_carousel_publications(job_id=job.id)
+    assert {row.platform for row in rows} == {"tiktok", "instagram"}
+
+    # the pair is still idempotent: re-saving the same platform returns its own row
+    again = await db.save_carousel_publication(
+        cm.CarouselPublication(job_id=job.id, platform="instagram", request_id="req-shared")
+    )
+    assert again.id == second.id
+    assert (await db.get_publication_by_request_id("req-shared", platform="tiktok")).id == first.id
+
+
 async def test_metrics_are_stored_with_source_and_raw_payload(db):
     job = await _new_job(db)
     publication = await db.save_carousel_publication(
