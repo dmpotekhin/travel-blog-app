@@ -494,6 +494,115 @@ async def list_carousel_publications(job_id: int) -> Dict[str, Any]:
     }
 
 
+# -- Tri-Face Carousel Factory: analytics + learnings (Phase 6) --------------
+
+
+@app.get("/api/carousels/jobs/{job_id}/metrics")
+async def list_job_metrics(job_id: int) -> Dict[str, Any]:
+    """Every collected number for one carousel, raw value kept next to it."""
+    rows = await _carousel().list_metrics(job_id)
+    return {"items": [row.model_dump(mode="json") for row in rows], "count": len(rows)}
+
+
+@app.post("/api/carousels/jobs/{job_id}/metrics/collect")
+async def collect_job_metrics(job_id: int) -> Dict[str, Any]:
+    """Ask the platform what happened; an empty answer stays empty."""
+    factory = _carousel()
+    rows = await factory.collect_metrics(job_id)
+    return {
+        "items": [row.model_dump(mode="json") for row in rows],
+        "count": len(rows),
+        "job": _job_payload(await factory.get_job(job_id)),
+    }
+
+
+@app.get("/api/carousels/jobs/{job_id}/score")
+async def score_carousel_job(job_id: int) -> Dict[str, Any]:
+    """Composite score + components + why the basis is what it is."""
+    score = await _carousel().score_job(job_id)
+    return {
+        "job_id": job_id,
+        "score": score.score,
+        "basis": score.basis,
+        "components": score.components,
+        "sample_size": score.sample_size,
+        "warnings": list(score.warnings),
+        "explain": score.explain(),
+    }
+
+
+@app.get("/api/carousels/learnings")
+async def list_carousel_learnings(
+    scope_type: Optional[str] = None,
+    scope_value: Optional[str] = None,
+    min_sample_size: int = 0,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Stored learnings (aggregates); aggregation happens on refresh, not on read."""
+    rows = await _carousel().list_learnings(
+        scope_type=scope_type,
+        scope_value=scope_value,
+        min_sample_size=min_sample_size,
+        limit=limit,
+    )
+    return {"items": [row.model_dump(mode="json") for row in rows], "count": len(rows)}
+
+
+@app.post("/api/carousels/learnings/refresh")
+async def refresh_carousel_learnings(vertical: Optional[str] = None) -> Dict[str, Any]:
+    """Re-aggregate published results into learnings (idempotent)."""
+    rows = await _carousel().refresh_learnings(vertical=vertical)
+    return {"items": [row.model_dump(mode="json") for row in rows], "count": len(rows)}
+
+
+@app.get("/api/carousels/recommendations")
+async def list_carousel_recommendations(
+    vertical: Optional[str] = None, limit: int = 5
+) -> Dict[str, Any]:
+    """What the history suggests — empty until a group has enough samples."""
+    picks = await _carousel().recommendations(vertical=vertical, limit=limit)
+    return {
+        "vertical": vertical or "all",
+        "items": [
+            {
+                "scope_type": pick.scope_type,
+                "scope_value": pick.scope_value,
+                "metric_name": pick.metric_name,
+                "metric_value": pick.metric_value,
+                "sample_size": pick.sample_size,
+                "confidence": pick.confidence,
+                "rationale": pick.rationale,
+            }
+            for pick in picks
+        ],
+        "count": len(picks),
+    }
+
+
+@app.get("/api/carousels/analytics/summary")
+async def carousel_analytics_summary(limit: int = 200) -> Dict[str, Any]:
+    """Pipeline health in numbers: what waits, what went out, what was learned."""
+    factory = _carousel()
+    jobs = await factory.list_jobs(limit=limit)
+    by_status: Dict[str, int] = {}
+    by_vertical: Dict[str, int] = {}
+    for job in jobs:
+        status = str(getattr(job.status, "value", job.status))
+        vertical = str(getattr(job.vertical, "value", job.vertical))
+        by_status[status] = by_status.get(status, 0) + 1
+        by_vertical[vertical] = by_vertical.get(vertical, 0) + 1
+    learnings = await factory.list_learnings(limit=500)
+    return {
+        "jobs": {"total": len(jobs), "by_status": by_status, "by_vertical": by_vertical},
+        "learnings": {"total": len(learnings)},
+        "autonomy": {
+            "mode": factory.settings.mode,
+            "requires_human_approval": factory.settings.require_human_approval,
+            "dry_run": factory.settings.dry_run,
+        },
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 

@@ -31,6 +31,7 @@ from core.models import (
     CarouselHookCandidate,
     CarouselJob,
     CarouselLearning,
+    CarouselMetric,
     CarouselPublication,
     CarouselSlide,
     CarouselSourceContext,
@@ -59,6 +60,16 @@ from .sources import (
     ResolveOptions,
     merge_warnings,
     source_resolver_for,
+)
+from .analytics import (
+    BaseMetricsCollector,
+    CarouselScore,
+    LearningStore,
+    Recommendation,
+    cohort_for,
+    collector_for,
+    latest_metrics_per_platform,
+    score_metrics,
 )
 from .publishing import (
     CAROUSEL_PLATFORMS,
@@ -912,6 +923,151 @@ class CarouselFactory:
             warnings.append(warning)
         return await self.update_job(
             job_id, warnings_json=json.dumps(warnings, ensure_ascii=False)
+        )
+
+    # ------------------------------------------------------------------
+    # analytics + learnings (Phase 6)
+    # ------------------------------------------------------------------
+
+    def metrics_collector(
+        self, *, fixtures: Optional[Dict[str, Dict[str, float]]] = None, dry_run: Optional[bool] = None
+    ) -> BaseMetricsCollector:
+        """The collector for this configuration (offline while ``dry_run``)."""
+        return collector_for(self.settings, self.secrets, fixtures=fixtures, dry_run=dry_run)
+
+    def learning_store(self) -> LearningStore:
+        """Aggregator over published history, with this config's thresholds."""
+        learning = self.settings.learning
+        return LearningStore(
+            self.db,
+            min_sample_size=learning.min_sample_size,
+            limit=learning.rolling_history,
+        )
+
+    async def collect_metrics(
+        self, job_id: int, *, collector: Optional[BaseMetricsCollector] = None
+    ) -> List[CarouselMetric]:
+        """Pull metrics for every uploaded platform row and store what came back.
+
+        Nothing is interpolated: a platform that reports no numbers produces a
+        warning on the job, not a zero-filled metric row.
+        """
+        job = await self.get_job(job_id)
+        publications = await repo.list_publications(self.db, job_id=job_id)
+        if not publications:
+            raise CarouselError(
+                f"У карусели {job_id} нет публикаций — сначала publish(), иначе собирать нечего."
+            )
+        active = collector or self.metrics_collector()
+        stored: List[CarouselMetric] = []
+        missing: List[str] = []
+        for publication in publications:
+            if publication.status not in (
+                PublicationStatus.PUBLISHED,
+                PublicationStatus.PROCESSING,
+            ):
+                continue
+            measured = await active.collect(publication)
+            if measured is None:
+                missing.append(publication.platform)
+                continue
+            if measured.is_empty():
+                missing.append(f"{publication.platform} ({measured.note or 'no numbers'})")
+                continue
+            rows = [
+                CarouselMetric(
+                    publication_id=publication.id,
+                    job_id=job_id,
+                    platform=measured.platform or publication.platform,
+                    metric_name=name,
+                    metric_value=value,
+                    raw_value=raw,
+                    source=measured.source,
+                    collected_at=utcnow(),
+                    raw_payload_json=json.dumps(measured.raw_payload, ensure_ascii=False),
+                )
+                for name, value, raw in measured.as_metric_pairs()
+            ]
+            for row in rows:
+                stored.append(await repo.save_metric(self.db, row))
+        if missing:
+            await self._append_warning(
+                job_id,
+                "метрик нет для: "
+                + ", ".join(sorted(missing))
+                + " — цифры не выдумываются, повторите сбор позже или внесите вручную",
+            )
+        logger.info(
+            "carousel job {}: collected {} metric rows (platforms without data: {})",
+            job_id,
+            len(stored),
+            ", ".join(sorted(missing)) or "-",
+        )
+        return stored
+
+    async def score_job(self, job_id: int) -> CarouselScore:
+        """Score one carousel against its vertical cohort (auditable components)."""
+        job = await self.get_job(job_id)
+        rows = await repo.list_metrics(self.db, job_id=job_id)
+        metrics, _ = latest_metrics_per_platform(rows)
+        if not metrics:
+            raise CarouselError(
+                f"У карусели {job_id} нет собранных метрик — сначала collect_metrics()."
+            )
+        peers = await self.learning_store().outcomes(vertical=job.vertical)
+        cohort_views, cohort_size = cohort_for(peers, job_id)
+        lab = self.settings.performance_lab
+        return score_metrics(
+            metrics,
+            lab.weights,
+            cohort_views=cohort_views,
+            cohort_size=cohort_size,
+            min_sample_size=lab.min_sample_size,
+            approved=can_publish(job) or job.status is CarouselStatus.PUBLISHED,
+            rejected=job.status is CarouselStatus.NEEDS_REVISION,
+        )
+
+    async def refresh_learnings(
+        self, *, vertical: Optional[str] = None
+    ) -> List[CarouselLearning]:
+        """Recompute the learnings store (idempotent; rolling aggregate)."""
+        if not self.settings.learning.enabled:
+            raise CarouselError("Learnings выключены в конфиге (carousels.learning.enabled).")
+        written = await self.learning_store().refresh(
+            vertical=vertical, weights=self.settings.performance_lab.weights
+        )
+        logger.info(
+            "carousel learnings refreshed: {} row(s){}",
+            len(written),
+            f" for vertical {vertical}" if vertical else "",
+        )
+        return written
+
+    async def recommendations(
+        self, *, vertical: Optional[str] = None, limit: int = 5
+    ) -> List[Recommendation]:
+        """What the history suggests for the next carousel (empty when thin)."""
+        return await self.learning_store().recommendations(vertical=vertical, limit=limit)
+
+    async def list_metrics(self, job_id: int) -> List[CarouselMetric]:
+        """Stored metric rows of one carousel, newest first."""
+        return await repo.list_metrics(self.db, job_id=job_id)
+
+    async def list_learnings(
+        self,
+        *,
+        scope_type: Optional[str] = None,
+        scope_value: Optional[str] = None,
+        min_sample_size: int = 0,
+        limit: Optional[int] = None,
+    ) -> List[CarouselLearning]:
+        """Stored learnings for the Analytics screen (no aggregation here)."""
+        return await repo.get_learnings(
+            self.db,
+            scope_type=scope_type,
+            scope_value=scope_value,
+            min_sample_size=min_sample_size,
+            limit=limit,
         )
 
     # ------------------------------------------------------------------

@@ -25,6 +25,7 @@ from loguru import logger
 
 from core import models as m
 from core.database import Database
+from core.exceptions import CarouselError
 from modules.publishers.base import PERMANENT_PREFIX
 from modules.publishers.registry import MANUAL_PLATFORMS, build_publisher
 from modules.publishers.service import PublishService
@@ -263,11 +264,64 @@ class Scheduler:
         planned = await self.plan()
         requeued = await self.retry_failed()
         published = await self.run_due()
+        carousels = await self.sync_carousels()
         return {
             "planned": len(planned),
             "requeued": len(requeued),
             "published": len(published),
+            "carousel_metrics": carousels["collected"],
+            "carousel_learnings": carousels["learnings"],
         }
+
+    # -- Tri-Face Carousel Factory (ADR-107) ------------------------------
+    async def sync_carousels(self) -> dict:
+        """Collect due carousel metrics and re-aggregate learnings.
+
+        Honors ``carousels.analytics.enabled`` and only touches posts older than
+        ``analytics.collect_after_hours``. In ``dry_run`` the collector is the
+        offline one, so a tick never talks to a platform on its own.
+        """
+        carousels = getattr(self.config, "carousels", None)
+        if carousels is None or not bool(getattr(carousels.analytics, "enabled", False)):
+            return {"collected": 0, "learnings": 0}
+
+        from modules.carousels.service import CarouselFactory
+
+        now = dt.datetime.now(UTC)
+        age = dt.timedelta(hours=int(carousels.analytics.collect_after_hours))
+
+        def _due(stamp: Optional[dt.datetime]) -> bool:
+            """A post with no timestamp is due (an unknown age is not a reason to skip)."""
+            if stamp is None:
+                return True
+            moment = stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+            return moment <= now - age
+
+        factory = CarouselFactory(self.db, self.config)
+        due_job_ids: List[int] = []
+        for publication in await self.db.list_carousel_publications():
+            if publication.status not in (m.PublicationStatus.PUBLISHED, m.PublicationStatus.PROCESSING):
+                continue
+            if not _due(publication.published_at or publication.created_at):
+                continue
+            if publication.job_id is not None and publication.job_id not in due_job_ids:
+                due_job_ids.append(publication.job_id)
+
+        collected = 0
+        for job_id in due_job_ids[: int(carousels.analytics.max_posts_per_run)]:
+            try:
+                collected += len(await factory.collect_metrics(job_id))
+            except CarouselError as exc:
+                logger.warning("carousel analytics for job {} skipped: {}", job_id, exc)
+
+        if not bool(getattr(carousels.learning, "enabled", False)):
+            return {"collected": collected, "learnings": 0}
+        try:
+            learnings = len(await factory.refresh_learnings())
+        except CarouselError as exc:
+            logger.warning("carousel learnings refresh skipped: {}", exc)
+            learnings = 0
+        return {"collected": collected, "learnings": learnings}
 
     # -- VibeCoding -------------------------------------------------------
     async def publish_vibecoding_due(self, limit: int = 10) -> List[dict]:

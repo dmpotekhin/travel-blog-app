@@ -107,3 +107,45 @@ def test_reject_needs_a_reason(client: TestClient):
     response = client.post(f"/api/carousels/jobs/{job_id}/reject", json={})
 
     assert response.status_code == 422  # reason is mandatory
+
+
+# -- analytics + learnings (Phase 6) ----------------------------------------
+
+
+def test_metrics_are_empty_until_something_is_collected(client: TestClient):
+    job_id = create_job(client)
+
+    listing = client.get(f"/api/carousels/jobs/{job_id}/metrics")
+    collect = client.post(f"/api/carousels/jobs/{job_id}/metrics/collect")
+    score = client.get(f"/api/carousels/jobs/{job_id}/score")
+
+    assert listing.status_code == 200 and listing.json() == {"items": [], "count": 0}
+    # nothing was published, so there is nothing to ask the platform about
+    assert collect.status_code == 400
+    assert "публикаций" in collect.json()["detail"]
+    assert score.status_code == 400
+    assert "метрик" in score.json()["detail"]
+
+
+def test_learnings_and_recommendations_start_empty(client: TestClient):
+    refresh = client.post("/api/carousels/learnings/refresh")
+    learnings = client.get("/api/carousels/learnings")
+    picks = client.get("/api/carousels/recommendations", params={"vertical": "travel"})
+
+    assert refresh.status_code == 200 and refresh.json()["count"] == 0
+    assert learnings.status_code == 200 and isinstance(learnings.json()["items"], list)
+    assert picks.status_code == 200
+    assert picks.json()["items"] == []  # a thin history must not invent advice
+    assert picks.json()["vertical"] == "travel"
+
+
+def test_analytics_summary_describes_the_pipeline(client: TestClient):
+    create_job(client)
+
+    response = client.get("/api/carousels/analytics/summary")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["jobs"]["total"] >= 1
+    assert "pending" in body["jobs"]["by_status"]
+    assert body["autonomy"]["dry_run"] is True
