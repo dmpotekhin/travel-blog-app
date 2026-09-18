@@ -130,6 +130,17 @@ class CarouselError(TravelBlogError):
         super().__init__(message, code="carousel_error", cause=cause)
 
 
+class SourceResolutionError(CarouselError):
+    """The source could not be read (transport, HTTP status, missing token).
+
+    Raised instead of guessing: the service marks the job FAILED with the
+    reason, so a human can fix the reference or the credential and re-run.
+    """
+
+    def __init__(self, message: str = "", *, cause: Optional[Exception] = None) -> None:
+        super().__init__(message, cause=cause)
+
+
 class InsufficientSourceDataError(CarouselError):
     """The source did not carry enough verified facts to build a carousel.
 

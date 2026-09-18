@@ -980,6 +980,8 @@ class CarouselSourceContext(BaseModel):
     published_at: str = ""
     confidence: float = 0.0
     warnings: List[str] = Field(default_factory=list)
+    #: Canonical (query/fragment-free) URL of the source — the dedupe key.
+    canonical_url: str = ""
     raw_payload_json: str = "{}"
     created_at: Optional[datetime] = None
 

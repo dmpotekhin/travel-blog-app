@@ -18,7 +18,7 @@ from loguru import logger
 
 from core.config import CarouselConfig, Config
 from core.database import Database, utcnow
-from core.exceptions import CarouselError, NotFoundError
+from core.exceptions import CarouselError, NotFoundError, SourceResolutionError
 from core.models import (
     CarouselBundle,
     CarouselJob,
@@ -31,7 +31,13 @@ from core.models import (
 )
 
 from . import database_helpers as repo
-from .enums import CarouselSourceType, resolve_source_type
+from .enums import CarouselSourceType, enum_text, resolve_source_type
+from .sources import (
+    BaseSourceResolver,
+    ResolveOptions,
+    merge_warnings,
+    source_resolver_for,
+)
 from .state_machine import (
     can_publish,
     describe,
@@ -43,6 +49,11 @@ from .state_machine import (
 )
 
 __all__ = ["CarouselFactory", "looks_like_url"]
+
+#: Warning a fresh job carries until research has actually read the source.
+NOT_RESOLVED_WARNING = "source not resolved yet"
+#: Added when the source did not carry enough verified facts.
+LOW_CONFIDENCE_WARNING = "low confidence source: manual confirmation required"
 
 
 def looks_like_url(value: str) -> bool:
@@ -226,7 +237,112 @@ class CarouselFactory:
         report = describe(job)
         report["next"] = plan_next(job)
         report["error_message"] = job.error_message
+        report["warnings"] = list(job.warnings)
+        report["needs_manual_input"] = bool(job.warnings)
         return report
+
+    # ------------------------------------------------------------------
+    # research (Phase 2)
+    # ------------------------------------------------------------------
+
+    async def research(
+        self,
+        job_id: int,
+        *,
+        resolver: Optional[BaseSourceResolver] = None,
+        options: Optional[ResolveOptions] = None,
+        detect_vertical: bool = True,
+    ) -> CarouselJob:
+        """Read the job's source into an audited :class:`CarouselSourceContext`.
+
+        The source is fetched by a resolver (URL / GitHub / mock for dry runs).
+        Nothing is invented: an unreadable source raises
+        :class:`SourceResolutionError` and the job is marked ``failed`` with the
+        reason; the detected vertical only overrides the configured default
+        (an explicit user choice always wins).
+        """
+        job = await self.get_job(job_id)
+        await self.transition(job_id, CarouselStatus.RESEARCHING)
+
+        active = resolver or source_resolver_for(
+            job.source_type, self.settings, dry_run=job.dry_run
+        )
+        rows = await repo.list_sources(self.db, job_id=job_id)
+        row = rows[0] if rows else None
+        source_ref = (row.source_ref if row else "") or job.source_url or job.title
+
+        try:
+            context = await active.resolve(source_ref)
+        except SourceResolutionError as exc:
+            logger.error("carousel job {}: source resolution failed: {}", job_id, exc)
+            await repo.fail_job(self.db, job_id, str(exc))
+            raise
+        logger.info(
+            "carousel job {}: resolved {} via {} (confidence {})",
+            job_id,
+            source_ref,
+            active.name,
+            context.confidence,
+        )
+
+        # A resolver that only warns (e.g. GraphQL discussion without a token)
+        # is still a resolved job — the warning travels with it.
+        warnings = merge_warnings(
+            [w for w in job.warnings if w != NOT_RESOLVED_WARNING], context.warnings
+        )
+        if context.is_low_confidence:
+            warnings = merge_warnings(warnings, [LOW_CONFIDENCE_WARNING])
+
+        vertical = job.vertical
+        if (
+            detect_vertical
+            and job.vertical is CarouselVertical.HYBRID
+            and context.vertical is not CarouselVertical.HYBRID
+        ):
+            vertical = context.vertical
+
+        fields: Dict[str, Any] = {
+            "source_context_json": context.model_dump_json(),
+            "confidence": float(context.confidence),
+            "warnings_json": json.dumps(warnings, ensure_ascii=False),
+            "vertical": enum_text(vertical),
+            "source_type": enum_text(context.source_type),
+        }
+        if not job.title and context.title:
+            fields["title"] = context.title
+        if not job.source_url and (context.canonical_url or source_ref):
+            fields["source_url"] = context.canonical_url or source_ref
+        await self.update_job(job_id, **fields)
+
+        canonical_url = context.canonical_url or (row.source_ref if row else "") or source_ref
+        audit = {
+            "source_type": enum_text(context.source_type),
+            "vertical": enum_text(vertical),
+            "canonical_url": canonical_url,
+            "external_id": context.external_id,
+            "title": context.title,
+            "content_type": context.content_type,
+            "confidence": float(context.confidence),
+            "warnings_json": json.dumps(list(context.warnings), ensure_ascii=False),
+            "context_json": context.model_dump_json(),
+            "raw_payload_json": context.raw_payload_json or "{}",
+            "resolver": active.name,
+        }
+        if row is not None:
+            await repo.update_source(self.db, row.id, **audit)
+        else:
+            await repo.add_source(
+                self.db,
+                CarouselSourceRecord(
+                    job_id=job_id,
+                    source_ref=source_ref,
+                    **audit,
+                ),
+            )
+
+        updated = await self.transition(job_id, CarouselStatus.RESEARCHED)
+        logger.info("carousel job {}: research stored ({} facts)", job_id, len(context.facts))
+        return updated
 
     # ------------------------------------------------------------------
     # slides

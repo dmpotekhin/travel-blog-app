@@ -11,6 +11,7 @@ and the fact-guard need.
 """
 from __future__ import annotations
 
+from enum import Enum
 from typing import Dict, FrozenSet, Iterable, Set, Union
 
 from core.exceptions import CarouselError
@@ -41,6 +42,7 @@ __all__ = [
     "TECHNICAL_SLIDE_TYPES",
     "VISUAL_SLIDE_TYPES",
     "SlideType",
+    "enum_text",
     "hook_categories_for",
     "is_technical_slide",
     "resolve_slide_type",
@@ -143,6 +145,17 @@ _SOURCE_TYPE_ALIASES: Dict[str, CarouselSourceType] = {
     "manual": CarouselSourceType.MANUAL_TOPIC,
     "manual_topic": CarouselSourceType.MANUAL_TOPIC,
 }
+
+
+def enum_text(value: Union[str, Enum]) -> str:
+    """Stored string form of any carousel enum (``CarouselVertical.QA`` -> ``"qa"``).
+
+    ``status_value`` in the state machine does this for statuses only; database
+    writes of ``vertical``/``source_type`` need the same unwrapping.
+    """
+    if isinstance(value, Enum) and isinstance(value.value, str):
+        return value.value
+    return str(value)
 
 
 def source_type_aliases() -> Dict[str, CarouselSourceType]:

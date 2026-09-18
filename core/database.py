@@ -464,6 +464,22 @@ _CAROUSEL_JOB_WRITABLE = frozenset(
     }
 )
 
+_CAROUSEL_SOURCE_WRITABLE = frozenset(
+    {
+        "source_type",
+        "vertical",
+        "canonical_url",
+        "external_id",
+        "title",
+        "content_type",
+        "confidence",
+        "warnings_json",
+        "context_json",
+        "raw_payload_json",
+        "resolver",
+    }
+)
+
 _CAROUSEL_SLIDE_WRITABLE = frozenset(
     {
         "order",
@@ -2049,6 +2065,34 @@ class Database:
         if stored is None:  # pragma: no cover - the row was just written
             raise DatabaseError(f"Carousel source {source_id} not found after write")
         return stored
+
+    async def get_carousel_source(self, source_id: int) -> Optional[m.CarouselSourceRecord]:
+        """One audit row by id (``None`` when it does not exist)."""
+        row = await self._fetchone("SELECT * FROM carousel_sources WHERE id = ?", (source_id,))
+        return _carousel_source_from_row(row)
+
+    async def update_carousel_source(
+        self, source_id: int, **fields: object
+    ) -> Optional[m.CarouselSourceRecord]:
+        """Update whitelisted columns of an audit row; unknown names raise.
+
+        ``job_id`` and ``source_ref`` are not writable: they identify the row.
+        """
+        sets: List[str] = []
+        values: List = []
+        for key, value in fields.items():
+            if key not in _CAROUSEL_SOURCE_WRITABLE:
+                raise ValueError(f"Cannot update carousel source column {key!r}")
+            sets.append(f"{key} = ?")
+            values.append(_sql_value(value))
+        if not sets:
+            return await self.get_carousel_source(source_id)
+        values.append(source_id)
+        async with self.transaction() as conn:
+            await conn.execute(
+                f"UPDATE carousel_sources SET {', '.join(sets)} WHERE id = ?", tuple(values)
+            )
+        return await self.get_carousel_source(source_id)
 
     async def list_carousel_sources(
         self, job_id: Optional[int] = None, limit: Optional[int] = None

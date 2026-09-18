@@ -153,6 +153,26 @@ async def list_sources(
     return await db.list_carousel_sources(job_id)
 
 
+async def get_source(db: Database, source_id: int) -> Optional[CarouselSourceRecord]:
+    """One source audit row by id."""
+    return await db.get_carousel_source(source_id)
+
+
+async def update_source(
+    db: Database, source_id: int, **fields: Any
+) -> Optional[CarouselSourceRecord]:
+    """Fill in an audit row once the resolver has actually read the source."""
+    return await db.update_carousel_source(source_id, **fields)
+
+
+async def fail_job(db: Database, job_id: int, error_message: str) -> Optional[CarouselJob]:
+    """Record why a job failed, then move it to ``failed`` (FSM validated)."""
+    job = await db.update_carousel_job(job_id, error_message=error_message)
+    if job is None:
+        return None
+    return await db.update_carousel_job_status(job_id, "failed")
+
+
 async def save_publication(db: Database, publication: CarouselPublication) -> CarouselPublication:
     """Insert a publication row; idempotent by ``request_id``."""
     return await db.save_carousel_publication(publication)
