@@ -400,6 +400,119 @@ class CarouselHealthConfig(BaseModel):
     max_body_lines: int = 3
 
 
+#: Generic system/automation framing: a travel fact worded this way already
+#: speaks the brand, even if the operator edits ``builder_angle_keywords``.
+SYSTEM_FRAMING = (
+    "систем",
+    "автоматиз",
+    "пайплайн",
+    "pipeline",
+    "агент",
+    "agent",
+    "workflow",
+    "воронк",
+    "стек",
+    "stack",
+    "датасет",
+    "dataset",
+    "exif",
+    "gps",
+    "api",
+)
+
+
+class CarouselBrandContentMixConfig(BaseModel):
+    """How much of the brand surface each face is allowed to take."""
+
+    vibecoding: float = 0.60
+    travel_as_case_study: float = 0.25
+    qa_trust: float = 0.10
+    personal_lifestyle: float = 0.05
+
+
+class CarouselBrandTravelRulesConfig(BaseModel):
+    """Travel is a case study of the AI stack, not a lifestyle feed."""
+
+    require_builder_angle: bool = True
+    allow_pure_lifestyle: bool = True
+    max_pure_travel_percentage: float = 30.0
+    #: supervised default: the guard warns in the slide plan, never blocks.
+    warning_only: bool = True
+    builder_angle_keywords: List[str] = Field(
+        default_factory=lambda: [
+            "система",
+            "автоматизация",
+            "пайплайн",
+            "агент",
+            "контент-фабрика",
+            "EXIF",
+            "GPS",
+            "датасет",
+            "архив как источник",
+            "personal AI stack",
+            "монетизация",
+            "воронка",
+        ]
+    )
+
+    def has_builder_angle(self, text: str) -> bool:
+        """True when the wording frames the fact as a system, not a postcard."""
+        if not self.require_builder_angle:
+            return True
+        lowered = (text or "").lower()
+        if any(keyword.lower() in lowered for keyword in self.builder_angle_keywords if keyword):
+            return True
+        return any(frame in lowered for frame in SYSTEM_FRAMING)
+
+
+class CarouselBrandRulesConfig(BaseModel):
+    """One face: what it is for and what it must never claim."""
+
+    role: str = ""
+    #: hook categories that already position testing as reliability proof
+    reliability_categories: List[str] = Field(default_factory=list)
+    forbidden: List[str] = Field(default_factory=list)
+
+
+class CarouselBrandCtaFunnelConfig(BaseModel):
+    """Every series leads into the funnel; the wording lives in config, not code."""
+
+    default_cta_by_vertical: Dict[str, str] = Field(default_factory=dict)
+    destination: str = "telegram_lead_magnet"
+    products: List[str] = Field(default_factory=list)
+
+    def cta_for(self, vertical: object) -> str:
+        """CTA configured for a vertical (empty string when it has none)."""
+        wanted = str(getattr(vertical, "value", vertical) or "").strip().lower()
+        for name, cta in self.default_cta_by_vertical.items():
+            if str(name).strip().lower() == wanted and isinstance(cta, str):
+                return cta.strip()
+        return ""
+
+
+class CarouselBrandConfig(BaseModel):
+    """The brand strategy the factory speaks with (``carousels.brand``)."""
+
+    primary_identity: str = ""
+    secondary_identity: str = ""
+    trust_layer: str = ""
+    content_mix: CarouselBrandContentMixConfig = Field(
+        default_factory=CarouselBrandContentMixConfig
+    )
+    travel_rules: CarouselBrandTravelRulesConfig = Field(
+        default_factory=CarouselBrandTravelRulesConfig
+    )
+    qa_rules: CarouselBrandRulesConfig = Field(
+        default_factory=lambda: CarouselBrandRulesConfig(role="trust_layer")
+    )
+    vibecoding_rules: CarouselBrandRulesConfig = Field(
+        default_factory=lambda: CarouselBrandRulesConfig(role="primary_brand")
+    )
+    cta_funnel: CarouselBrandCtaFunnelConfig = Field(
+        default_factory=CarouselBrandCtaFunnelConfig
+    )
+
+
 class CarouselConfig(BaseModel):
     """Tri-Face Carousel Factory (config.yaml ``carousels``).
 
@@ -434,6 +547,7 @@ class CarouselConfig(BaseModel):
     learning: CarouselLearningConfig = Field(default_factory=CarouselLearningConfig)
     performance_lab: CarouselPerformanceLabConfig = Field(default_factory=CarouselPerformanceLabConfig)
     health: CarouselHealthConfig = Field(default_factory=CarouselHealthConfig)
+    brand: CarouselBrandConfig = Field(default_factory=CarouselBrandConfig)
 
     @field_validator("mode")
     @classmethod

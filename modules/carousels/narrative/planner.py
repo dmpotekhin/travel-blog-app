@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Callable, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -22,6 +22,7 @@ from core.models import (
     CarouselSlide,
     CarouselSlidePlan,
     CarouselSourceContext,
+    CarouselVertical,
     CodeSnippet,
     ImageAsset,
     Metric,
@@ -30,6 +31,9 @@ from core.models import (
 
 from ..fact_guard import FactGuard
 from ..vertical_profiles import DEFAULT_ACCENTS, VerticalProfile, profile_for
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the planner importable
+    from core.config import CarouselBrandConfig
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -77,8 +81,15 @@ class SlidePlanner:
         self,
         *,
         guard_factory: Callable[[CarouselSourceContext], FactGuard] = FactGuard,
+        brand: Optional["CarouselBrandConfig"] = None,
+        cta_override: str = "",
     ) -> None:
         self._guard_factory = guard_factory
+        #: Brand strategy from ``carousels.brand``: it drives the travel guard
+        #: and the funnel CTA. ``None`` keeps the pre-brand behaviour.
+        self._brand = brand
+        #: An operator's own CTA wins over the configured one.
+        self._cta_override = cta_override
         self._material: List[Tuple[str, str]] = []
         self._cursor = 0
         #: indices of ``_material`` already used by a slide (no early repeats)
@@ -119,6 +130,10 @@ class SlidePlanner:
         warnings: List[str] = []
         if not self._material:
             warnings.append("source has no facts — slides stay empty on purpose")
+        # Brand strategy (config carousels.brand.travel_rules): a travel carousel
+        # must still read as a system case study. Supervised default = this is a
+        # warning — the human approval gate remains the only thing that blocks.
+        warnings.extend(self._travel_builder_angle_warnings(profile.vertical, context))
 
         slides: List[CarouselSlide] = []
         for order, slide_type in enumerate(sequence, start=1):
@@ -416,7 +431,49 @@ class SlidePlanner:
 
     def _cta(self, draft: SlideDraft, profile: VerticalProfile) -> None:
         draft.claim_free = True
-        draft.headline = profile.cta_style
+        draft.headline = self._cta_text(profile)
+
+    # -- brand strategy (config carousels.brand) -----------------------
+
+    def _cta_text(self, profile: VerticalProfile) -> str:
+        """Funnel CTA for a vertical: the operator's words, then the config.
+
+        The strings live in ``carousels.brand.cta_funnel`` — the profile's own
+        ``cta_style`` is only the fallback when no brand config is injected.
+        """
+        if self._cta_override:
+            return self._cta_override
+        funnel = getattr(self._brand, "cta_funnel", None)
+        configured = funnel.cta_for(profile.vertical) if funnel is not None else ""
+        return configured or profile.cta_style
+
+    def _travel_builder_angle_warnings(
+        self, vertical: object, context: CarouselSourceContext
+    ) -> List[str]:
+        """Warn — never block — when a travel plan has no builder angle in sight."""
+        brand = self._brand
+        if brand is None or vertical is not CarouselVertical.TRAVEL:
+            return []
+        rules = brand.travel_rules
+        if not getattr(rules, "require_builder_angle", True):
+            return []
+        if rules.has_builder_angle(self._context_text(context)):
+            return []
+        note = (
+            "TRAVEL_BUILDER_ANGLE_MISSING: карусель выйдет как pure lifestyle. "
+            "Подтвердите или добавьте builder-angle в hook/narrative."
+        )
+        if not getattr(rules, "warning_only", True):
+            note = f"{note} (warning_only=false — требуется подтверждение)"
+        return [note]
+
+    @staticmethod
+    def _context_text(context: CarouselSourceContext) -> str:
+        """Every word the resolver actually read (the guard reads, never writes)."""
+        parts: List[str] = [context.title, context.summary]
+        parts.extend(context.facts)
+        parts.extend(fact.text for fact in context.sourced_facts if fact.text)
+        return " ".join(part for part in parts if part)
 
     # -- validation ----------------------------------------------------
 

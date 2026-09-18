@@ -414,7 +414,7 @@ class CarouselFactory:
         if context is None:
             raise CarouselError("job has no source context — run research() first")
 
-        candidates = (engine or HookEngine()).generate(
+        candidates = (engine or HookEngine(brand=getattr(self.settings, "brand", None))).generate(
             context, vertical=job.vertical, limit=limit
         )
         await repo.save_hook_candidates(self.db, job_id, candidates)
@@ -449,7 +449,7 @@ class CarouselFactory:
 
         candidates = await repo.get_hook_candidates(self.db, job_id)
         hook = self._choose_hook(job, candidates, hook_id)
-        plan = (planner or SlidePlanner()).plan(
+        plan = (planner or SlidePlanner(brand=getattr(self.settings, "brand", None))).plan(
             context,
             vertical=job.vertical,
             hook=hook,

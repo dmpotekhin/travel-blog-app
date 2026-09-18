@@ -356,3 +356,72 @@ carousels:
     max_headline_chars: 90
     max_bullets_per_slide: 5
     max_body_lines: 3
+  # ---- Personal brand strategy ----
+  # The factory is a brand surface, not a content mill: hook ranking reads the
+  # content mix, travel must keep a builder angle, QA is the trust layer, and
+  # every series ends in the funnel CTA below (no CTA strings live in the code).
+  brand:
+    primary_identity: vibecoder / ai systems builder / personal automation engineer
+    secondary_identity: travel operator, archive as live case study
+    trust_layer: qa / engineering discipline / fact guard / human approval
+    content_mix:
+      vibecoding: 0.60
+      travel_as_case_study: 0.25
+      qa_trust: 0.10
+      personal_lifestyle: 0.05
+    travel_rules:
+      require_builder_angle: true
+      # каждое travel-высказывание по умолчанию должно показывать:
+      # как это работает как система / автоматизация / контент-фабрика /
+      # personal AI stack / монетизация.
+      # Допускается 20–30% чистого travel-emotion, но не по умолчанию.
+      allow_pure_lifestyle: true
+      max_pure_travel_percentage: 30
+      # supervised default: the guard warns in the slide plan, the human decides.
+      warning_only: true
+      builder_angle_keywords:
+        - система
+        - автоматизация
+        - пайплайн
+        - агент
+        - контент-фабрика
+        - EXIF
+        - GPS
+        - датасет
+        - архив как источник
+        - personal AI stack
+        - монетизация
+        - воронка
+    qa_rules:
+      role: trust_layer
+      # QA — не отдельная ниша, а доказательство, что AI-система
+      # тестируется, валидируется, имеет fact guard и approval.
+      # hook получает brand_fit-бонус, когда позиционирует надёжность как
+      # доказательство — эти категории и есть такие хуки:
+      reliability_categories: [flaky_test, ci_slowdown, root_cause, before_after,
+                               myth_busting]
+      forbidden:
+        - invented_root_cause
+        - invented_metrics
+        - invented_code
+        - truncated_code_without_warning
+    vibecoding_rules:
+      role: primary_brand
+      forbidden:
+        - hype_without_evidence
+        - invented_benchmarks
+        - fake_screenshots
+        - undisclosed_cloud_usage_when_claiming_local
+    cta_funnel:
+      # каждая серия каруселей должна вести в воронку персонального бренда
+      default_cta_by_vertical:
+        vibecoding: "Напиши «factory» — скину структуру AI-контент-фабрики"
+        qa: "Забирай чек-лист против flaky AI-контента в Telegram"
+        travel: "Напиши «China pipeline» — скину структуру"
+      destination: telegram_lead_magnet
+      products:
+        - prompt pack
+        - carousel factory template
+        - AI workflow audit
+        - personal AI stack consultation
+        - travel guide / route product

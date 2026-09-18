@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -24,6 +24,9 @@ from core.models import (
 
 from ..fact_guard import normalize
 from ..vertical_profiles import profile_for
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the engine importable
+    from core.config import CarouselBrandConfig
 
 _DIGITS = re.compile(r"\d")
 
@@ -276,12 +279,34 @@ PATTERNS_BY_VERTICAL: Dict[CarouselVertical, Tuple[HookPattern, ...]] = {
     CarouselVertical.VIBECODING: VIBECODING_PATTERNS,
 }
 
+#: Which face a pattern key belongs to — brand_fit ranks across families.
+FAMILY_BY_PATTERN: Dict[str, CarouselVertical] = {
+    pattern.key: vertical
+    for vertical, patterns in PATTERNS_BY_VERTICAL.items()
+    for pattern in patterns
+}
+
+#: brand_fit is a ranking multiplier only (config carousels.brand): it can
+#: never block a hook, it can only move it up or down inside this band.
+BRAND_FIT_MIN = 0.8
+BRAND_FIT_MAX = 1.2
+#: How far the content mix may push a face inside the band.
+BRAND_FIT_SPREAD = 0.25
+
 
 class HookEngine:
     """Proposes ranked hooks for a researched context (supervised by default)."""
 
-    def __init__(self, *, max_text_chars: int = 100) -> None:
+    def __init__(
+        self,
+        *,
+        max_text_chars: int = 100,
+        brand: Optional["CarouselBrandConfig"] = None,
+    ) -> None:
         self.max_text_chars = max_text_chars
+        #: Brand strategy from ``carousels.brand``. Without it the score stays
+        #: raw (no brand_fit term) — the pre-brand ranking, unchanged.
+        self.brand = brand
 
     def patterns_for(self, vertical: object) -> Tuple[HookPattern, ...]:
         """Pattern families of a vertical; hybrid may borrow from every face."""
@@ -321,13 +346,22 @@ class HookEngine:
             if not line:
                 continue
             used_lines.add(line)
-            scores = self._score(pattern, line)
+            rendered = self._render(pattern, line)
+            scores = self._score(pattern, line, rendered=rendered)
+            brand_fit = scores.pop("brand_fit", None)
+            additive = min(sum(scores.values()), 1.0)
+            if brand_fit is not None:
+                # brand_fit ranks, it never blocks: it stays visible in
+                # scores_json but multiplies the additive terms instead of
+                # joining the sum. Without a brand there is no such term at all.
+                scores["brand_fit"] = brand_fit
+            factor = 1.0 if brand_fit is None else brand_fit
             candidates.append(
                 CarouselHookCandidate(
                     category=pattern.category.value,
                     pattern=pattern.key,
-                    text=self._render(pattern, line),
-                    score=round(min(sum(scores.values()), 1.0), 2),
+                    text=rendered,
+                    score=round(min(additive * factor, 1.0), 2),
                     expected_emotion=pattern.expected_emotion,
                     rationale=pattern.rationale,
                     source_support=line,
@@ -344,14 +378,51 @@ class HookEngine:
         )
         return candidates[: max(limit, 0)]
 
-    def _score(self, pattern: HookPattern, line: str) -> Dict[str, float]:
-        """Explainable score: pattern strength + concrete numbers + source length."""
+    def _score(
+        self, pattern: HookPattern, line: str, *, rendered: str = ""
+    ) -> Dict[str, float]:
+        """Explainable score: pattern strength + numbers + detail + brand fit."""
         scores: Dict[str, float] = {"pattern": round(pattern.base_score, 2)}
         if _DIGITS.search(line):
             scores["numbers"] = 0.12
         if normalize(line) and len(line.split()) >= 6:
             scores["detail"] = 0.08
+        brand_fit = self._brand_fit(pattern, f"{line} {rendered}")
+        if brand_fit is not None:
+            scores["brand_fit"] = brand_fit
         return scores
+
+    def _brand_fit(self, pattern: HookPattern, text: str) -> Optional[float]:
+        """Brand-strategy multiplier inside [0.8, 1.2]; ``None`` without a brand.
+
+        The content mix sets the multiple: vibecoding is the primary face, travel
+        only counts as a case study (a hook with no builder angle drops to the
+        bottom of the band, because pure lifestyle is the smallest slot), and QA
+        pays off when the hook already reads as reliability proof.
+        """
+        brand = self.brand
+        if brand is None:
+            return None
+
+        face = FAMILY_BY_PATTERN.get(pattern.key)
+        mix = brand.content_mix
+        if face is CarouselVertical.VIBECODING:
+            fit = 1.0 + getattr(mix, "vibecoding", 0.0) * BRAND_FIT_SPREAD
+        elif face is CarouselVertical.TRAVEL:
+            if brand.travel_rules.has_builder_angle(text):
+                fit = 1.0 + getattr(mix, "travel_as_case_study", 0.0) * BRAND_FIT_SPREAD
+            else:
+                fit = BRAND_FIT_MIN + getattr(mix, "personal_lifestyle", 0.0)
+        elif face is CarouselVertical.QA:
+            categories = tuple(getattr(brand.qa_rules, "reliability_categories", ()) or ())
+            fit = (
+                1.0 + getattr(mix, "qa_trust", 0.0) * BRAND_FIT_SPREAD
+                if pattern.category.value in categories
+                else 1.0
+            )
+        else:
+            fit = 1.0
+        return round(min(max(fit, BRAND_FIT_MIN), BRAND_FIT_MAX), 2)
 
     def _render(self, pattern: HookPattern, line: str) -> str:
         """Fill the template and keep the hook inside the headline budget."""
@@ -362,6 +433,9 @@ class HookEngine:
 
 
 __all__ = [
+    "BRAND_FIT_MAX",
+    "BRAND_FIT_MIN",
+    "FAMILY_BY_PATTERN",
     "HookEngine",
     "HookPattern",
     "PATTERNS_BY_VERTICAL",
