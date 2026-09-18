@@ -21,6 +21,7 @@ from core.database import Database, utcnow
 from core.exceptions import CarouselError, NotFoundError, SourceResolutionError
 from core.models import (
     CarouselBundle,
+    CarouselHookCandidate,
     CarouselJob,
     CarouselLearning,
     CarouselPublication,
@@ -32,6 +33,8 @@ from core.models import (
 
 from . import database_helpers as repo
 from .enums import CarouselSourceType, enum_text, resolve_source_type
+from .hooks import HookEngine
+from .narrative import SlidePlanner, clip
 from .sources import (
     BaseSourceResolver,
     ResolveOptions,
@@ -343,6 +346,103 @@ class CarouselFactory:
         updated = await self.transition(job_id, CarouselStatus.RESEARCHED)
         logger.info("carousel job {}: research stored ({} facts)", job_id, len(context.facts))
         return updated
+
+    # ------------------------------------------------------------------
+    # narrative + slide planning (Phase 3)
+    # ------------------------------------------------------------------
+
+    async def draft_narrative(
+        self, job_id: int, *, limit: int = 5, engine: Optional[HookEngine] = None
+    ) -> CarouselJob:
+        """Propose ranked, source-backed hooks for a researched job.
+
+        In supervised mode these are *candidates*: a human picks one (or the
+        highest-scoring one is used when nobody cares). An empty source yields
+        zero hooks and a warning — never filler.
+        """
+        job = await self.get_job(job_id)
+        context = job.source_context()
+        if context is None:
+            raise CarouselError("job has no source context — run research() first")
+
+        candidates = (engine or HookEngine()).generate(
+            context, vertical=job.vertical, limit=limit
+        )
+        await repo.save_hook_candidates(self.db, job_id, candidates)
+
+        warnings = list(job.warnings)
+        if not candidates:
+            warnings = merge_warnings(
+                warnings, ["no hook candidates: the source matched none of the patterns"]
+            )
+        fields: Dict[str, Any] = {"warnings_json": json.dumps(warnings, ensure_ascii=False)}
+        if candidates:
+            fields["logline"] = clip(candidates[0].source_support, 120)
+        await self.update_job(job_id, **fields)
+
+        updated = await self.transition(job_id, CarouselStatus.NARRATIVE_DRAFTED)
+        logger.info("carousel job {}: {} hook candidates", job_id, len(candidates))
+        return updated
+
+    async def plan_slides(
+        self,
+        job_id: int,
+        *,
+        hook_id: Optional[int] = None,
+        planner: Optional[SlidePlanner] = None,
+        slide_count: Optional[int] = None,
+    ) -> CarouselBundle:
+        """Turn the source context into the six-slide plan and persist it."""
+        job = await self.get_job(job_id)
+        context = job.source_context()
+        if context is None:
+            raise CarouselError("job has no source context — run research() first")
+
+        candidates = await repo.get_hook_candidates(self.db, job_id)
+        hook = self._choose_hook(job, candidates, hook_id)
+        plan = (planner or SlidePlanner()).plan(
+            context,
+            vertical=job.vertical,
+            hook=hook,
+            job_id=job_id,
+            slide_count=slide_count,
+        )
+        slides = await repo.save_carousel_slides(self.db, job_id, plan.slides)
+
+        if hook is not None and hook.id is not None:
+            await repo.select_hook_candidate(self.db, job_id, hook.id)
+
+        warnings = merge_warnings(list(job.warnings), plan.warnings)
+        await self.update_job(
+            job_id,
+            selected_hook_id=hook.id if hook is not None else job.selected_hook_id,
+            logline=plan.logline or job.logline,
+            caption=plan.caption or job.caption,
+            hashtags_json=json.dumps(list(plan.hashtags), ensure_ascii=False),
+            warnings_json=json.dumps(warnings, ensure_ascii=False),
+        )
+        await self.transition(job_id, CarouselStatus.SLIDES_PLANNED)
+        bundle = await self.get_bundle(job_id)
+        logger.info("carousel job {}: planned {} slides", job_id, len(slides))
+        return bundle
+
+    @staticmethod
+    def _choose_hook(
+        job: CarouselJob,
+        candidates: Sequence[CarouselHookCandidate],
+        hook_id: Optional[int],
+    ) -> Optional[CarouselHookCandidate]:
+        """Explicit pick > previous pick > highest score (never invented)."""
+        if hook_id is not None:
+            for candidate in candidates:
+                if candidate.id == hook_id:
+                    return candidate
+            raise NotFoundError(f"hook candidate {hook_id} not found for job {job.id}")
+        if job.selected_hook_id is not None:
+            for candidate in candidates:
+                if candidate.id == job.selected_hook_id:
+                    return candidate
+        return candidates[0] if candidates else None
 
     # ------------------------------------------------------------------
     # slides
