@@ -242,6 +242,24 @@ class MediaPreset(BaseModel):
     max_mb: float = 5.0
 
 
+class VisualNarrativeConfig(BaseModel):
+    """Visual Narrative Studio settings (config.yaml ``visual_narrative``).
+
+    ``provider`` empty means "follow ai.provider"; ``mock`` produces a
+    deterministic plan without any network call, which is also what
+    ``app.dry_run`` forces.
+    """
+
+    enabled: bool = True
+    provider: str = "mock"
+    max_photos: int = 12
+    require_alt_text: bool = True
+    enforce_narrative_arc: bool = True
+    allow_manual_override: bool = True
+    #: opt-in hard gate: refuse to generate platform content until approved
+    require_approval: bool = False
+
+
 class Config(BaseModel):
     app: AppConfig = Field(default_factory=AppConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -256,6 +274,7 @@ class Config(BaseModel):
     facebook: FacebookConfig = Field(default_factory=FacebookConfig)
     trip: TripConfig = Field(default_factory=TripConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
+    visual_narrative: VisualNarrativeConfig = Field(default_factory=VisualNarrativeConfig)
     queue: QueueConfig = Field(default_factory=QueueConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     content: ContentConfig = Field(default_factory=ContentConfig)

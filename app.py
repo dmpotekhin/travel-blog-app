@@ -12,19 +12,32 @@ Endpoints:
     POST /api/scheduler/tick
     POST /api/scheduler/publish-due
     POST /api/pipeline/content/{city_id}
+    GET  /api/cities/{city_id}/storyboard
+    POST /api/cities/{city_id}/storyboard/generate
+    PUT  /api/cities/{city_id}/storyboard
+    POST /api/cities/{city_id}/storyboard/approve
+    GET  /api/storyboards/{storyboard_id}
 """
 from __future__ import annotations
 
 import datetime as dt
 from contextlib import asynccontextmanager
+from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from core import models as m
 from core.config import Config
 from core.database import Database
+from core.exceptions import NotFoundError, StateTransitionError, StoryboardValidationError
 from modules.scheduler import Scheduler
 from modules.stats import StatsService
+from modules.visual_narrative_studio import (
+    ApprovalRequest,
+    StoryboardUpdateRequest,
+    VisualNarrativeStudio,
+)
 
 
 def _load_config() -> Config:
@@ -120,6 +133,72 @@ async def pipeline_content(city_id: int):
     ce = ContentEngine(app.state.db, app.state.config)
     result = await ce.process_city(city_id)
     return {"ok": True, "city_id": city_id, "result": result}
+
+
+# -- Visual Narrative Studio (P13, ADR-106) ---------------------------------
+
+
+def _studio() -> VisualNarrativeStudio:
+    """Studio bound to the API's single Database connection."""
+    return VisualNarrativeStudio(app.state.db, app.state.config)
+
+
+@app.exception_handler(NotFoundError)
+async def _not_found_handler(request: Request, exc: NotFoundError) -> JSONResponse:
+    return JSONResponse(status_code=404, content={"detail": str(exc), "code": exc.code})
+
+
+@app.exception_handler(StateTransitionError)
+async def _illegal_transition_handler(request: Request, exc: StateTransitionError) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(exc), "code": exc.code})
+
+
+@app.exception_handler(StoryboardValidationError)
+async def _storyboard_invalid_handler(
+    request: Request, exc: StoryboardValidationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={"detail": str(exc), "code": exc.code, "issues": exc.issues},
+    )
+
+
+@app.get("/api/cities/{city_id}/storyboard")
+async def city_storyboard(city_id: int) -> m.StoryboardBundle:
+    """Latest storyboard version of the city with beats, shots and issues."""
+    return await _studio().bundle_for_city(city_id)
+
+
+@app.post("/api/cities/{city_id}/storyboard/generate")
+async def generate_city_storyboard(city_id: int, dry_run: bool = False) -> m.VisualNarrativeResult:
+    """Build the visual narrative; ``dry_run=true`` previews without persisting."""
+    return await _studio().generate(city_id, dry_run=dry_run or None)
+
+
+@app.put("/api/cities/{city_id}/storyboard")
+async def update_city_storyboard(
+    city_id: int, payload: StoryboardUpdateRequest
+) -> m.StoryboardBundle:
+    """Apply human edits (header, shots, order) to the latest storyboard."""
+    return await _studio().apply_update(city_id, payload)
+
+
+@app.post("/api/cities/{city_id}/storyboard/approve")
+async def approve_city_storyboard(
+    city_id: int, payload: Optional[ApprovalRequest] = None
+) -> m.StoryboardBundle:
+    """Human gate: the storyboard is approved for platform content."""
+    studio = _studio()
+    storyboard = await studio.latest_storyboard(city_id)
+    if storyboard is None:
+        raise NotFoundError(f"City {city_id} has no storyboard yet")
+    request = payload or ApprovalRequest()
+    return await studio.approve(storyboard.id or 0, force=request.force, actor=request.actor)
+
+
+@app.get("/api/storyboards/{storyboard_id}")
+async def get_storyboard(storyboard_id: int) -> m.StoryboardBundle:
+    return await _studio().bundle_for_id(storyboard_id)
 
 
 if __name__ == "__main__":

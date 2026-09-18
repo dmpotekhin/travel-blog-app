@@ -11,6 +11,9 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from core import models as m
+from modules import narrative_heuristics
+
 from .base import BaseAIProvider, ImageAnalysis
 
 
@@ -45,6 +48,15 @@ class MockProvider(BaseAIProvider):
     async def _analyze_image_raw(self, image_path: str, prompt: str) -> ImageAnalysis:
         # not used (analyze_image is overridden) but required by the ABC
         return await self.analyze_image(image_path, prompt)
+
+    # -- visual narrative (ADR-106) ---------------------------------------
+
+    async def generate_visual_narrative_plan(
+        self, context: "m.NarrativeContext", *, max_photos: int = 12
+    ) -> "m.VisualNarrativePlan":
+        """Deterministic storyboard: no network call, same input ⇒ same plan."""
+        trimmed = context.model_copy(update={"photos": list(context.photos)[: max(1, max_photos)]})
+        return narrative_heuristics.local_plan(trimmed, provider=self.name, degraded=False)
 
     async def _generate_text_raw(
         self, system: str, user: str, *, max_tokens: Optional[int] = None

@@ -164,7 +164,96 @@ CREATE TABLE IF NOT EXISTS vibecoding_posts (
     created_at TEXT,
     published_at TEXT
 );
+
+-- ---------------------------------------------------------------------------
+-- Visual Narrative Studio (ADR-106): a storyboard is the visual narrative of a
+-- city. Every (re)generation writes a new version, so history is immutable and
+-- the draft/approved/archived machine in core/models.py stays meaningful.
+-- CREATE TABLE IF NOT EXISTS keeps the migration idempotent: an existing
+-- database picks the tables up on the next connect() and stored data is
+-- untouched.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS storyboards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    city_id INTEGER NOT NULL REFERENCES cities(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT '',
+    logline TEXT NOT NULL DEFAULT '',
+    narrative_arc TEXT NOT NULL DEFAULT '',
+    emotional_journey TEXT NOT NULL DEFAULT '',
+    primary_theme TEXT NOT NULL DEFAULT '',
+    secondary_themes_json TEXT NOT NULL DEFAULT '[]',
+    target_platforms_json TEXT NOT NULL DEFAULT '[]',
+    accessibility_notes_json TEXT NOT NULL DEFAULT '[]',
+    cultural_sensitivity_notes_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'draft',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(city_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS narrative_beats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    storyboard_id INTEGER NOT NULL REFERENCES storyboards(id) ON DELETE CASCADE,
+    beat_type TEXT NOT NULL DEFAULT 'setup',
+    "order" INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    emotional_tone TEXT NOT NULL DEFAULT '',
+    visual_goal TEXT NOT NULL DEFAULT '',
+    photo_paths_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS storyboard_shots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    storyboard_id INTEGER NOT NULL REFERENCES storyboards(id) ON DELETE CASCADE,
+    photo_path TEXT NOT NULL,
+    "order" INTEGER NOT NULL DEFAULT 0,
+    caption TEXT NOT NULL DEFAULT '',
+    alt_text TEXT NOT NULL DEFAULT '',
+    crop_recommendation TEXT NOT NULL DEFAULT '',
+    focus_point TEXT NOT NULL DEFAULT '',
+    visual_metaphor TEXT NOT NULL DEFAULT '',
+    pacing_weight REAL NOT NULL DEFAULT 1.0,
+    is_hero_image INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_storyboards_city ON storyboards(city_id, version);
+CREATE INDEX IF NOT EXISTS idx_storyboards_status ON storyboards(status);
+CREATE INDEX IF NOT EXISTS idx_beats_storyboard ON narrative_beats(storyboard_id, "order");
+CREATE INDEX IF NOT EXISTS idx_shots_storyboard ON storyboard_shots(storyboard_id, "order");
 """
+
+# Whitelists for storyboard writes (Visual Narrative Studio): dynamic SQL uses
+# column names, so only names from these sets may reach an UPDATE statement.
+_STORYBOARD_WRITABLE = frozenset(
+    {
+        "title",
+        "logline",
+        "narrative_arc",
+        "emotional_journey",
+        "primary_theme",
+        "secondary_themes_json",
+        "target_platforms_json",
+        "accessibility_notes_json",
+        "cultural_sensitivity_notes_json",
+        "status",
+        "version",
+    }
+)
+_SHOT_WRITABLE = frozenset(
+    {
+        "photo_path",
+        "order",
+        "caption",
+        "alt_text",
+        "crop_recommendation",
+        "focus_point",
+        "visual_metaphor",
+        "pacing_weight",
+        "is_hero_image",
+    }
+)
 
 # Whitelist of counter columns for gemini_stats (prevents SQL injection).
 _GEMINI_COUNTERS = frozenset(
@@ -949,10 +1038,347 @@ class Database:
         rows = await self._fetchall(sql, params)
         return [_log_from_row(r) for r in rows]
 
+    # -- storyboards (Visual Narrative Studio, ADR-106) ---------------------
+
+    async def add_storyboard(self, storyboard: m.Storyboard) -> m.Storyboard:
+        """Insert one storyboard version (unique per city+version)."""
+        now = _iso(utcnow())
+        row_id = await self._insert(
+            """
+            INSERT INTO storyboards (city_id, title, logline, narrative_arc, emotional_journey,
+                                     primary_theme, secondary_themes_json, target_platforms_json,
+                                     accessibility_notes_json, cultural_sensitivity_notes_json,
+                                     status, version, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                storyboard.city_id,
+                storyboard.title,
+                storyboard.logline,
+                storyboard.narrative_arc,
+                storyboard.emotional_journey,
+                storyboard.primary_theme,
+                storyboard.secondary_themes_json,
+                storyboard.target_platforms_json,
+                storyboard.accessibility_notes_json,
+                storyboard.cultural_sensitivity_notes_json,
+                storyboard.status.value,
+                storyboard.version,
+                _iso(storyboard.created_at) or now,
+                _iso(storyboard.updated_at) or now,
+            ),
+        )
+        return await self._require_storyboard(row_id)
+
+    async def add_storyboard_graph(
+        self,
+        storyboard: m.Storyboard,
+        beats: Optional[List[m.NarrativeBeat]] = None,
+        shots: Optional[List[m.StoryboardShot]] = None,
+    ) -> m.Storyboard:
+        """Insert a storyboard with its beats and shots in one transaction.
+
+        One atomic write keeps a half-saved storyboard (beats without shots)
+        impossible — the studio always writes whole versions.
+        """
+        now = _iso(utcnow())
+        try:
+            async with self.transaction() as conn:
+                cur = await conn.execute(
+                    """
+                    INSERT INTO storyboards (city_id, title, logline, narrative_arc, emotional_journey,
+                                             primary_theme, secondary_themes_json, target_platforms_json,
+                                             accessibility_notes_json, cultural_sensitivity_notes_json,
+                                             status, version, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        storyboard.city_id,
+                        storyboard.title,
+                        storyboard.logline,
+                        storyboard.narrative_arc,
+                        storyboard.emotional_journey,
+                        storyboard.primary_theme,
+                        storyboard.secondary_themes_json,
+                        storyboard.target_platforms_json,
+                        storyboard.accessibility_notes_json,
+                        storyboard.cultural_sensitivity_notes_json,
+                        storyboard.status.value,
+                        storyboard.version,
+                        _iso(storyboard.created_at) or now,
+                        _iso(storyboard.updated_at) or now,
+                    ),
+                )
+                storyboard_id = int(cur.lastrowid or 0)
+                for beat in beats or []:
+                    await conn.execute(
+                        """
+                        INSERT INTO narrative_beats (storyboard_id, beat_type, "order", title,
+                                                     description, emotional_tone, visual_goal,
+                                                     photo_paths_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            storyboard_id,
+                            beat.beat_type.value,
+                            beat.order,
+                            beat.title,
+                            beat.description,
+                            beat.emotional_tone,
+                            beat.visual_goal,
+                            beat.photo_paths_json,
+                        ),
+                    )
+                for shot in shots or []:
+                    await conn.execute(
+                        """
+                        INSERT INTO storyboard_shots (storyboard_id, photo_path, "order", caption,
+                                                      alt_text, crop_recommendation, focus_point,
+                                                      visual_metaphor, pacing_weight, is_hero_image)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            storyboard_id,
+                            shot.photo_path,
+                            shot.order,
+                            shot.caption,
+                            shot.alt_text,
+                            shot.crop_recommendation,
+                            shot.focus_point,
+                            shot.visual_metaphor,
+                            float(shot.pacing_weight),
+                            int(bool(shot.is_hero_image)),
+                        ),
+                    )
+        except aiosqlite.IntegrityError as exc:
+            raise DuplicateError(f"Duplicate storyboard version: {exc}") from exc
+        return await self._require_storyboard(storyboard_id)
+
+    async def _require_storyboard(self, storyboard_id: int) -> m.Storyboard:
+        storyboard = await self.get_storyboard(storyboard_id)
+        if storyboard is None:  # pragma: no cover - the row was just written
+            raise DatabaseError(f"Storyboard {storyboard_id} not found after write")
+        return storyboard
+
+    async def get_storyboard(self, storyboard_id: int) -> Optional[m.Storyboard]:
+        row = await self._fetchone("SELECT * FROM storyboards WHERE id = ?", (storyboard_id,))
+        return _storyboard_from_row(row)
+
+    async def get_city_storyboard(
+        self, city_id: int, status: Optional[str] = None
+    ) -> Optional[m.Storyboard]:
+        """Latest storyboard version of a city (optionally filtered by status)."""
+        sql = "SELECT * FROM storyboards WHERE city_id = ?"
+        params: List = [city_id]
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY version DESC LIMIT 1"
+        return _storyboard_from_row(await self._fetchone(sql, params))
+
+    async def list_storyboards(
+        self, city_id: Optional[int] = None, status: Optional[str] = None
+    ) -> List[m.Storyboard]:
+        sql = "SELECT * FROM storyboards"
+        where: List[str] = []
+        params: List = []
+        if city_id is not None:
+            where.append("city_id = ?")
+            params.append(city_id)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY city_id, version DESC"
+        rows = await self._fetchall(sql, params)
+        return [sb for sb in (_storyboard_from_row(r) for r in rows) if sb is not None]
+
+    async def next_storyboard_version(self, city_id: int) -> int:
+        """Version to use for the next storyboard of this city (1-based)."""
+        row = await self._fetchone(
+            "SELECT MAX(version) AS v FROM storyboards WHERE city_id = ?", (city_id,)
+        )
+        return int(row["v"] or 0) + 1 if row else 1
+
+    async def update_storyboard(self, storyboard_id: int, **fields: object) -> Optional[m.Storyboard]:
+        """Update whitelisted columns; unknown names raise ValueError (no dynamic SQL)."""
+        sets: List[str] = []
+        values: List = []
+        for key, value in fields.items():
+            if key not in _STORYBOARD_WRITABLE:
+                raise ValueError(f"Cannot update storyboard column {key!r}")
+            sets.append(f"{key} = ?")
+            values.append(value.value if isinstance(value, m.StoryboardStatus) else value)
+        if not sets:
+            return await self.get_storyboard(storyboard_id)
+        sets.append("updated_at = ?")
+        values.append(_iso(utcnow()))
+        values.append(storyboard_id)
+        async with self.transaction() as conn:
+            await conn.execute(f"UPDATE storyboards SET {', '.join(sets)} WHERE id = ?", tuple(values))
+        return await self.get_storyboard(storyboard_id)
+
+    async def update_storyboard_status(self, storyboard_id: int, status: str) -> Optional[m.Storyboard]:
+        """Move a storyboard through its state machine (draft/approved/archived)."""
+        current = await self.get_storyboard(storyboard_id)
+        if current is None:
+            raise NotFoundError(f"Storyboard {storyboard_id} not found")
+        m.storyboard_transition(current.status.value, status)
+        return await self.update_storyboard(storyboard_id, status=status)
+
+    async def add_beat(self, beat: m.NarrativeBeat) -> m.NarrativeBeat:
+        if beat.storyboard_id is None:
+            raise DatabaseError("NarrativeBeat.storyboard_id is required")
+        beat.id = await self._insert(
+            """
+            INSERT INTO narrative_beats (storyboard_id, beat_type, "order", title, description,
+                                         emotional_tone, visual_goal, photo_paths_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                beat.storyboard_id,
+                beat.beat_type.value,
+                beat.order,
+                beat.title,
+                beat.description,
+                beat.emotional_tone,
+                beat.visual_goal,
+                beat.photo_paths_json,
+            ),
+        )
+        return beat
+
+    async def get_beats(self, storyboard_id: int) -> List[m.NarrativeBeat]:
+        rows = await self._fetchall(
+            'SELECT * FROM narrative_beats WHERE storyboard_id = ? ORDER BY "order", id',
+            (storyboard_id,),
+        )
+        return [b for b in (_beat_from_row(r) for r in rows) if b is not None]
+
+    async def add_shot(self, shot: m.StoryboardShot) -> m.StoryboardShot:
+        if shot.storyboard_id is None:
+            raise DatabaseError("StoryboardShot.storyboard_id is required")
+        shot.id = await self._insert(
+            """
+            INSERT INTO storyboard_shots (storyboard_id, photo_path, "order", caption, alt_text,
+                                          crop_recommendation, focus_point, visual_metaphor,
+                                          pacing_weight, is_hero_image)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                shot.storyboard_id,
+                shot.photo_path,
+                shot.order,
+                shot.caption,
+                shot.alt_text,
+                shot.crop_recommendation,
+                shot.focus_point,
+                shot.visual_metaphor,
+                float(shot.pacing_weight),
+                int(bool(shot.is_hero_image)),
+            ),
+        )
+        return shot
+
+    async def get_shots(self, storyboard_id: int) -> List[m.StoryboardShot]:
+        rows = await self._fetchall(
+            'SELECT * FROM storyboard_shots WHERE storyboard_id = ? ORDER BY "order", id',
+            (storyboard_id,),
+        )
+        return [s for s in (_shot_from_row(r) for r in rows) if s is not None]
+
+    async def get_shot(self, shot_id: int) -> Optional[m.StoryboardShot]:
+        row = await self._fetchone("SELECT * FROM storyboard_shots WHERE id = ?", (shot_id,))
+        return _shot_from_row(row)
+
+    async def replace_shot_order(
+        self, storyboard_id: int, ordered_shot_ids: List[int]
+    ) -> List[m.StoryboardShot]:
+        """Apply a new visual order: ``order`` becomes the index in the given list."""
+        async with self.transaction() as conn:
+            for position, shot_id in enumerate(ordered_shot_ids):
+                await conn.execute(
+                    'UPDATE storyboard_shots SET "order" = ? WHERE id = ? AND storyboard_id = ?',
+                    (position, shot_id, storyboard_id),
+                )
+        return await self.get_shots(storyboard_id)
+
+    async def update_shot(self, shot_id: int, **fields: object) -> Optional[m.StoryboardShot]:
+        """Update whitelisted shot columns (alt-text, captions, order, hero flag...)."""
+        sets: List[str] = []
+        values: List = []
+        for key, value in fields.items():
+            if key not in _SHOT_WRITABLE:
+                raise ValueError(f"Cannot update shot column {key!r}")
+            sets.append(f"{key} = ?")
+            values.append(int(bool(value)) if key == "is_hero_image" else value)
+        if not sets:
+            row = await self._fetchone("SELECT * FROM storyboard_shots WHERE id = ?", (shot_id,))
+            return _shot_from_row(row)
+        values.append(shot_id)
+        async with self.transaction() as conn:
+            await conn.execute(f"UPDATE storyboard_shots SET {', '.join(sets)} WHERE id = ?", tuple(values))
+        row = await self._fetchone("SELECT * FROM storyboard_shots WHERE id = ?", (shot_id,))
+        return _shot_from_row(row)
+
+    async def replace_shots(
+        self, storyboard_id: int, shots: List[m.StoryboardShot]
+    ) -> List[m.StoryboardShot]:
+        """Rewrite the whole shot list atomically (used by reorder/hero-image edits)."""
+        async with self.transaction() as conn:
+            await conn.execute("DELETE FROM storyboard_shots WHERE storyboard_id = ?", (storyboard_id,))
+            for shot in shots:
+                await conn.execute(
+                    """
+                    INSERT INTO storyboard_shots (storyboard_id, photo_path, "order", caption, alt_text,
+                                                  crop_recommendation, focus_point, visual_metaphor,
+                                                  pacing_weight, is_hero_image)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        storyboard_id,
+                        shot.photo_path,
+                        shot.order,
+                        shot.caption,
+                        shot.alt_text,
+                        shot.crop_recommendation,
+                        shot.focus_point,
+                        shot.visual_metaphor,
+                        float(shot.pacing_weight),
+                        int(bool(shot.is_hero_image)),
+                    ),
+                )
+        return await self.get_shots(storyboard_id)
+
+    async def delete_storyboard_rows(self, storyboard_id: int) -> None:
+        """Drop beats and shots of a storyboard (the storyboard row stays)."""
+        async with self.transaction() as conn:
+            await conn.execute("DELETE FROM narrative_beats WHERE storyboard_id = ?", (storyboard_id,))
+            await conn.execute("DELETE FROM storyboard_shots WHERE storyboard_id = ?", (storyboard_id,))
+
 
 # --------------------------------------------------------------------------
 # Row -> model converters
 # --------------------------------------------------------------------------
+
+
+def _storyboard_from_row(row: Optional[dict]) -> Optional[m.Storyboard]:
+    if row is None:
+        return None
+    return m.Storyboard(**row)
+
+
+def _beat_from_row(row: Optional[dict]) -> Optional[m.NarrativeBeat]:
+    if row is None:
+        return None
+    return m.NarrativeBeat(**row)
+
+
+def _shot_from_row(row: Optional[dict]) -> Optional[m.StoryboardShot]:
+    if row is None:
+        return None
+    return m.StoryboardShot(**row)
 
 
 def _city_from_row(row: Optional[dict]) -> Optional[m.City]:

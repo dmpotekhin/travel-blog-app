@@ -5,9 +5,10 @@ The state machine is centralized here so illegal transitions (e.g.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -86,6 +87,25 @@ class VibeCodingStatus(str, Enum):
     ERROR = "error"
 
 
+class NarrativeBeatType(str, Enum):
+    """Beat types of the visual narrative arc (Visual Narrative Studio)."""
+
+    SETUP = "setup"
+    CONFLICT = "conflict"
+    DEVELOPMENT = "development"
+    CLIMAX = "climax"
+    RESOLUTION = "resolution"
+    REFLECTION = "reflection"
+
+
+class StoryboardStatus(str, Enum):
+    """Lifecycle of a storyboard (own machine, independent of CityStatus)."""
+
+    DRAFT = "draft"
+    APPROVED = "approved"
+    ARCHIVED = "archived"
+
+
 # --------------------------------------------------------------------------
 # State machine: allowed transitions
 # --------------------------------------------------------------------------
@@ -159,6 +179,22 @@ def draft_transition(current: str, target: str) -> None:
 def vibecoding_transition(current: str, target: str) -> None:
     """Validate a VibeCoding post state transition via the state machine."""
     check_transition(current, target, _VIBECODING_TRANSITIONS, "vibecoding_post")
+
+
+# A storyboard is the visual narrative that sits between photo analysis and
+# platform content. ``draft`` is the studio output; only a human approves it;
+# ``archived`` is terminal — a new version is a new row, never an edit.
+_STORYBOARD_TRANSITIONS: Dict[str, set] = {
+    StoryboardStatus.DRAFT: {StoryboardStatus.APPROVED, StoryboardStatus.ARCHIVED},
+    # approved storyboards stay editable: an edit demotes them back to draft.
+    StoryboardStatus.APPROVED: {StoryboardStatus.DRAFT, StoryboardStatus.ARCHIVED},
+    StoryboardStatus.ARCHIVED: set(),
+}
+
+
+def storyboard_transition(current: str, target: str) -> None:
+    """Validate a storyboard state transition via the centralized state machine."""
+    check_transition(current, target, _STORYBOARD_TRANSITIONS, "storyboard")
 
 
 # --------------------------------------------------------------------------
@@ -312,6 +348,182 @@ class ContentPack(BaseModel):
     video_paths: List[str] = Field(default_factory=list)
     hashtags: List[str] = Field(default_factory=list)
     content_version: int = 1
+
+
+# --------------------------------------------------------------------------
+# Visual Narrative Studio (ADR-106): the visual layer that sits between photo
+# analysis and platform content. Beats/shots/storyboard are persisted rows;
+# ``VisualNarrativePlan`` is the (unpersisted) plan, the last two are read models.
+# --------------------------------------------------------------------------
+
+
+def dump_json_list(items: Iterable[str]) -> str:
+    """JSON-encode a list of strings the way the DB columns expect it."""
+    return json.dumps([str(item) for item in items], ensure_ascii=False)
+
+
+def load_json_list(raw: Optional[str]) -> List[str]:
+    """Tolerant JSON list decoding — a bad payload must never crash the UI."""
+    try:
+        data = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    if isinstance(data, list):
+        return [str(item) for item in data]
+    return []
+
+
+class NarrativePhoto(BaseModel):
+    """One analysed photograph reduced to the facts the narrative may use."""
+
+    path: str
+    filename: str = ""
+    scene: str = ""
+    objects: List[str] = Field(default_factory=list)
+    mood: str = ""
+    text: str = ""
+    quality_ok: bool = True
+    taken_at: Optional[str] = None
+
+    @property
+    def stem(self) -> str:
+        name = self.filename or self.path.rsplit("/", 1)[-1]
+        return name.rsplit(".", 1)[0]
+
+
+class NarrativeContext(BaseModel):
+    """Input of the visual-narrative step: facts only, no free invention."""
+
+    city_id: int
+    city: str
+    country: str = ""
+    year: Optional[int] = None
+    language: str = "ru"
+    photos: List[NarrativePhoto] = Field(default_factory=list)
+    base_story: str = ""
+    target_platforms: List[str] = Field(default_factory=list)
+
+
+class NarrativeBeat(BaseModel):
+    """One beat of the narrative arc (setup -> ... -> reflection)."""
+
+    id: Optional[int] = None
+    storyboard_id: Optional[int] = None
+    beat_type: NarrativeBeatType = NarrativeBeatType.SETUP
+    order: int = 0
+    title: str = ""
+    description: str = ""
+    emotional_tone: str = ""
+    visual_goal: str = ""
+    photo_paths_json: str = "[]"
+
+    @property
+    def photo_paths(self) -> List[str]:
+        return load_json_list(self.photo_paths_json)
+
+    def set_photo_paths(self, paths: Iterable[str]) -> NarrativeBeat:
+        self.photo_paths_json = dump_json_list(paths)
+        return self
+
+
+class StoryboardShot(BaseModel):
+    """One frame: a photograph plus how it is presented to the reader."""
+
+    id: Optional[int] = None
+    storyboard_id: Optional[int] = None
+    photo_path: str
+    order: int = 0
+    caption: str = ""
+    alt_text: str = ""
+    crop_recommendation: str = ""
+    focus_point: str = ""
+    visual_metaphor: str = ""
+    pacing_weight: float = 1.0
+    is_hero_image: bool = False
+
+
+class Storyboard(BaseModel):
+    """The persisted visual narrative of one city (one row per version)."""
+
+    id: Optional[int] = None
+    city_id: int
+    title: str = ""
+    logline: str = ""
+    narrative_arc: str = ""
+    emotional_journey: str = ""
+    primary_theme: str = ""
+    secondary_themes_json: str = "[]"
+    target_platforms_json: str = "[]"
+    accessibility_notes_json: str = "[]"
+    cultural_sensitivity_notes_json: str = "[]"
+    status: StoryboardStatus = StoryboardStatus.DRAFT
+    version: int = 1
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    @property
+    def secondary_themes(self) -> List[str]:
+        return load_json_list(self.secondary_themes_json)
+
+    @property
+    def target_platforms(self) -> List[str]:
+        return load_json_list(self.target_platforms_json)
+
+    @property
+    def accessibility_notes(self) -> List[str]:
+        return load_json_list(self.accessibility_notes_json)
+
+    @property
+    def cultural_sensitivity_notes(self) -> List[str]:
+        return load_json_list(self.cultural_sensitivity_notes_json)
+
+
+class VisualNarrativePlan(BaseModel):
+    """Unpersisted plan produced by a provider (or by the local heuristics)."""
+
+    city_id: int
+    selected_photos: List[str] = Field(default_factory=list)
+    beats: List[NarrativeBeat] = Field(default_factory=list)
+    shots: List[StoryboardShot] = Field(default_factory=list)
+    hook: str = ""
+    climax: str = ""
+    ending: str = ""
+    accessibility_notes: List[str] = Field(default_factory=list)
+    cultural_sensitivity_notes: List[str] = Field(default_factory=list)
+    # Narrative header — persisted onto the storyboard row.
+    title: str = ""
+    logline: str = ""
+    narrative_arc: str = ""
+    emotional_journey: str = ""
+    primary_theme: str = ""
+    secondary_themes: List[str] = Field(default_factory=list)
+    # Provenance / honesty: a plan always says who produced it and how.
+    provider: str = ""
+    model: str = ""
+    degraded: bool = False
+    degradation_reason: str = ""
+    dry_run: bool = False
+    raw: str = ""
+
+
+class StoryboardBundle(BaseModel):
+    """Read model: a storyboard with its beats, shots and validation issues."""
+
+    storyboard: Storyboard
+    beats: List[NarrativeBeat] = Field(default_factory=list)
+    shots: List[StoryboardShot] = Field(default_factory=list)
+    issues: List[str] = Field(default_factory=list)
+
+
+class VisualNarrativeResult(BaseModel):
+    """Typed outcome of one Visual Narrative Studio run."""
+
+    city_id: int
+    storyboard: Storyboard
+    plan: VisualNarrativePlan
+    created: bool = True
+    warnings: List[str] = Field(default_factory=list)
+    dry_run: bool = False
 
 
 class BaseStory(BaseModel):

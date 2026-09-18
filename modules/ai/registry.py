@@ -22,6 +22,18 @@ def build_provider(
     name = (name or config.ai.provider or "").lower()
     if name == "mock" or (config.app.dry_run and name not in ("mock",)):
         return MockProvider(db, config)
+    if name == "local_vlm":
+        # Extension point (ADR-106): a local vision-language model plugs in by
+        # implementing the same BaseAIProvider contract, nothing else changes.
+        try:
+            from .local_vlm import LocalVLMProvider
+        except ImportError as exc:
+            raise ConfigurationError(
+                "AI provider 'local_vlm' is not wired yet: add modules/ai/local_vlm.py "
+                "implementing BaseAIProvider (see LOCAL_VLM_BASE_URL / LOCAL_VLM_MODEL "
+                "in .env.example)"
+            ) from exc
+        return LocalVLMProvider(db, config)
     if name == "gemini":
         from .gemini import GeminiProvider
         return GeminiProvider(db, config)

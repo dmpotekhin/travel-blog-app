@@ -34,6 +34,7 @@ from modules.stats import StatsService
 from modules.trip_validator import TripValidator
 from ui.vibecoding_page import render as render_vibecoding
 from ui.settings_page import render as render_settings
+from ui.storyboard_page import render as render_storyboard
 from ui.validation_view import render_validation
 
 _STATUS_COLS = ["published", "scheduled", "pending", "processing", "failed", "manual", "disabled"]
@@ -298,8 +299,8 @@ def main() -> None:
     st.set_page_config(page_title="Travel Blog Automation", layout="wide")
     st.title("🌍 Travel Blog Automation — Dashboard")
 
-    tab_upload, tab_posts, tab_stats, tab_vibe, tab_settings = st.tabs(
-        ["📤 Upload", "📝 Posts", "📊 Stats", "✨ VibeCoding", "⚙️ Settings"]
+    tab_upload, tab_posts, tab_stats, tab_storyboard, tab_vibe, tab_settings = st.tabs(
+        ["📤 Upload", "📝 Posts", "📊 Stats", "🎬 Storyboard", "✨ VibeCoding", "⚙️ Settings"]
     )
 
     with tab_upload:
@@ -308,6 +309,8 @@ def main() -> None:
         _render_posts_tab()
     with tab_stats:
         _render_stats_tab()
+    with tab_storyboard:
+        render_storyboard()
     with tab_vibe:
         render_vibecoding()
     with tab_settings:

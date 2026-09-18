@@ -12,7 +12,7 @@
 ![SQLite](https://img.shields.io/badge/SQLite%20%2B%20aiosqlite-003B57?logo=sqlite&logoColor=white)
 ![APScheduler](https://img.shields.io/badge/APScheduler-000000?logo=clockify&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
-![tested](https://img.shields.io/badge/tests-80%20passed%20✓-2ea44f)
+![tested](https://img.shields.io/badge/tests-130%20passed%20✓-2ea44f)
 
 <div>
  <sub>рассчитан на архив: <b>255 городов</b> · <b>50 стран</b> · ~1 ТБ фото с 2003 · ~3000 подписчиков в Facebook</sub>
@@ -95,7 +95,7 @@ HuggingFace) → публикация по площадкам, со своим �
 
 - **`docs/architecture-review-2026-09-04.md`** — архитектурное ревью персоной Software
   Architect: 11 разделов, находки F1–F11, план из 5 ADR.
-- **Реализованы ADR-101…105** (все изменения прошли TDD, полный сьют — **80 passed**):
+- **Реализованы ADR-101…105** и **ADR-106** (все изменения прошли TDD, полный сьют — **130 passed**):
 
 | ADR | Суть |
 |-----|------|
@@ -104,6 +104,18 @@ HuggingFace) → публикация по площадкам, со своим �
 | **103** | Атомарный claim публикации (нет двойной отправки из CLI+API+планировщика) + enforcement машины состояний. |
 | **104** | Честный медиа-путь: Telegram шлёт альбом (`sendMediaGroup`, до 10 фото) + флаг `degraded` вместо тихой деградации. |
 | **105** | Удалено ~210 строк мёртвого кода; починен `/api/scheduler/publish-due`; синхронизированы доки; добавлены архитектурные guard-тесты. |
+| **106** | **Visual Narrative Studio**: слой визуального нарратива между AI-анализом фотографий и генерацией контента — сюжетная арка, раскадровка с порядком кадров, подписи, alt-тексты, кадрирование, визуальный ритм; админ-API + вкладка «🎬 Storyboard». |
+
+**Visual Narrative Studio (ADR-106, P14).** Между анализом фотографий и базовой историей
+появился отдельный шаг, превращающий набор кадров и фактов в осмысленную визуальную
+историю: биты (`setup → conflict → development → climax → resolution → reflection`),
+эмоциональная дуга, раскадровка с порядком кадров, подписи, alt-тексты, рекомендации по
+кадрированию и визуальному ритму. Студия работает только через `BaseAIProvider` (Gemini /
+DeepSeek / детерминированный mock; `local_vlm` — зарезервированная точка расширения),
+поддерживает dry-run, хранит версионированные storyboard'ы в SQLite и отдаёт их через
+админ-API и вкладку «🎬 Storyboard». Одобрение storyboard — своя машина состояний
+(`draft → approved → archived`); жёсткий гейт перед платформенным контентом включается
+флагом `visual_narrative.require_approval`.
 
 > Подробный дизайн и решения по каждой фазе — в [`ARCHITECTURE.md`](ARCHITECTURE.md);
 > текущий статус фаз — в [`.planning/STATE.md`](.planning/STATE.md).

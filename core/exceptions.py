@@ -106,6 +106,21 @@ class VibeCodingError(TravelBlogError):
         super().__init__(message, code="vibecoding_error", cause=cause)
 
 
+class StoryboardValidationError(TravelBlogError):
+    """A storyboard cannot be approved/published as it stands (e.g. missing alt-text)."""
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        issues: Optional[List[str]] = None,
+        cause: Optional[Exception] = None,
+    ) -> None:
+        super().__init__(message, code="storyboard_invalid", cause=cause)
+        #: machine-readable reasons (see modules/narrative_heuristics.alt_text_issues)
+        self.issues: List[str] = list(issues or [])
+
+
 class ErrorCategory:
     """Error classification for the retry strategy."""
 

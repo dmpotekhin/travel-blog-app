@@ -26,6 +26,16 @@ schedule:
 ai:
   provider: gemini              # gemini | deepseek | mock
 
+# Visual Narrative Studio: photos + AI facts -> storyboard (arc, shots, alt-texts).
+visual_narrative:
+  enabled: true
+  provider: mock                # mock | gemini | deepseek | local_vlm | "" (follow ai.provider)
+  max_photos: 12
+  require_alt_text: true
+  enforce_narrative_arc: true
+  allow_manual_override: true
+  require_approval: false       # true = platform content waits for an approved storyboard
+
 gemini:
   requests_per_minute: 15
   requests_per_day: 1500

@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from core.config import Config
 from core.database import Database
-from core.exceptions import TravelBlogError
-from core.models import City, CityStatus, Draft, Platform, ScanStatus
+from core.exceptions import StoryboardValidationError, TravelBlogError
+from core.models import City, CityStatus, Draft, Platform, ScanStatus, StoryboardStatus
 from modules.ai.base import BaseAIProvider, ImageAnalysis
 from modules.ai.registry import build_provider
 from modules.queue import CityQueue
@@ -81,7 +81,14 @@ class ContentEngine:
 
     # -- generation --------------------------------------------------------
 
-    async def generate_base_story(self, city: City, photo_facts: List[str]) -> str:
+    async def generate_base_story(
+        self, city: City, photo_facts: List[str], narrative_block: str = ""
+    ) -> str:
+        """Base story for the city; ``narrative_block`` carries the storyboard (ADR-106).
+
+        The extra argument is optional on purpose: the signature stays backwards
+        compatible for callers (and tests) that know nothing about the studio.
+        """
         user = prompts.BASE_STORY_USER.format(
             city=city.name,
             country=city.country or "",
@@ -89,7 +96,7 @@ class ContentEngine:
             photo_count=len(photo_facts),
             facts="\n".join(photo_facts),
         )
-        return await self.provider.generate_text(prompts.BASE_STORY_SYSTEM, user)
+        return await self.provider.generate_text(prompts.BASE_STORY_SYSTEM, user + narrative_block)
 
     async def generate_platform_variant(
         self, city: City, base: str, platform: Platform
@@ -121,7 +128,14 @@ class ContentEngine:
             if not photo_facts:
                 raise TravelBlogError(f"No photo could be analysed for city {city.name}")
 
-            base = await self.generate_base_story(city, photo_facts)
+            # VISUAL NARRATIVE STUDIO (ADR-106): analysed photos -> storyboard.
+            # It sits between the analysis and the base story, is idempotent and
+            # best-effort, and adds no new *city* status: the city machine stays
+            # QUEUED -> PROCESSING -> DRAFTED, while the storyboard carries its own
+            # draft/approved gate (see _build_visual_narrative).
+            narrative_block = await self._build_visual_narrative(city, results)
+
+            base = await self.generate_base_story(city, photo_facts, narrative_block)
 
             async def adapt(platform: Platform) -> Draft:
                 content = await self.generate_platform_variant(city, base, platform)
@@ -158,6 +172,50 @@ class ContentEngine:
         return done
 
     # -- helpers -----------------------------------------------------------
+
+    async def _build_visual_narrative(self, city: City, results: List[tuple]) -> str:
+        """Run the Visual Narrative Studio for this city (ADR-106).
+
+        Returns the narrative block to append to the base-story prompt, or ``""``
+        when the feature is disabled, there is nothing to tell, or the studio
+        failed. Deliberately no new city status: the storyboard's own
+        draft/approved machine is where the human gate lives, and
+        ``visual_narrative.require_approval`` opts into failing the city until that
+        gate is passed (it is off by default so the current pipeline is unchanged).
+        """
+        settings = getattr(self.config, "visual_narrative", None)
+        if settings is None or not settings.enabled:
+            return ""
+
+        # Imported lazily: the studio imports the prompts of this package, so a
+        # module-level import would create a cycle.
+        from modules.visual_narrative_studio import VisualNarrativeStudio
+
+        city_id = city.id
+        if city_id is None:  # a stored city always has an id
+            log.warning("Visual narrative skipped for %s: city has no id", city.name)
+            return ""
+        studio = VisualNarrativeStudio(
+            self.db, self.config, provider=self.provider, settings=settings
+        )
+        analyses: Dict[str, ImageAnalysis] = {
+            photo.path: analysis for photo, analysis, _error in results if analysis is not None
+        }
+        try:
+            result = await studio.generate(city_id, analyses=analyses)
+        except Exception as exc:  # noqa: BLE001 - the studio must never break the pipeline
+            log.warning("Visual narrative studio failed for %s: %s", city.name, exc)
+            return ""
+
+        for warning in result.warnings:
+            log.warning("Visual narrative (%s): %s", city.name, warning)
+        if settings.require_approval and result.storyboard.status is not StoryboardStatus.APPROVED:
+            raise StoryboardValidationError(
+                f"storyboard for {city.name} must be approved before platform content "
+                f"(status={result.storyboard.status.value})",
+                issues=[f"storyboard_{result.storyboard.status.value}"],
+            )
+        return await studio.narrative_block(city_id)
 
     def _facts_from_results(self, results: List[tuple]) -> List[str]:
         facts = []

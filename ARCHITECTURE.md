@@ -439,3 +439,101 @@ Trip.com (Trip Moments) and VibeCoding (educational/expert). Runs both in the UI
 ### Verification
 
 Full suite passes: `pytest tests/` → 59 passed.
+
+---
+
+## 15. Visual Narrative Studio (feature P14, ADR-106, added 2026-09-18)
+
+A visual-narrative layer between the AI photo analysis and the platform content.
+It turns a folder of analysed photographs + facts into an *intentional* visual
+story: a narrative arc, an emotional journey, a storyboard (ordered shots with
+captions, alt-texts, crop/focus hints and pacing) and the accessibility /
+cultural-sensitivity notes that must accompany it.
+
+```
+PHOTO SELECTION
+    v
+AI IMAGE ANALYSIS
+    v
+VISUAL NARRATIVE STUDIO   (modules/visual_narrative_studio.py)
+    v
+BASE TRAVEL STORY         (prompt gets the storyboard block)
+    v
+PLATFORM CONTENT
+```
+
+### Decisions (recorded in the architecture register)
+
+- **ADR-106 (implemented).** The studio is an *additive step inside* the existing
+  pipeline, not a new city status. `modules/content/engine.py` calls
+  `_build_visual_narrative()` after `_analyse_photos()` and appends the rendered
+  storyboard to the base-story prompt; the city machine stays
+  `QUEUED → PROCESSING → DRAFTED/ERROR` (public contract: CLI, API, tests, UI).
+  The human gate lives in the storyboard's own state machine
+  (`draft → approved → archived`, `core/models.py`), so
+  `visual_narrative.require_approval: true` (default **false**) is the only way to
+  make platform content wait for approval — the current pipeline is unchanged by
+  default.
+- **ADR-106b.** All AI work goes through `BaseAIProvider`: the new
+  `generate_visual_narrative_plan(context, max_photos=...)` has a **default
+  implementation in `base.py`** (one text call → one JSON document → domain plan),
+  so Gemini/DeepSeek inherit it through their existing `_generate_text_raw` HTTP
+  paths without touching their code. `MockProvider` overrides it with a
+  deterministic plan (`modules/narrative_heuristics.local_plan`), and
+  `provider: local_vlm` is a reserved extension point resolved by
+  `modules/ai/registry.py` (raises a clear `ConfigurationError` until
+  `modules/ai/local_vlm.py` exists). `analyze_photo_sequence()` reuses the
+  pipeline's own analysis prompt so `ai_cache` hits and no quota is re-spent.
+- **ADR-106c.** Honest degradation instead of silent failure: a provider error
+  falls back to the local heuristics and marks the plan `degraded` with a reason
+  (reported by the API/UI), a city without photos is skipped, and the whole step
+  is wrapped so the studio can never break a city.
+- **ADR-106d.** Narrative logic has exactly one home: pure helpers in
+  `modules/narrative_heuristics.py` (arc, pacing, crop/focus heuristics, alt-text
+  validation, `ensure_arc` invariants: canonical beat order, required beats
+  synthesized if the material cannot afford them, one hero image, shots restricted
+  to analysed photos), prompt text in `modules/narrative_prompts.py`, SQL in
+  `core/database.py`, orchestration in `modules/visual_narrative_studio.py`. The
+  API and the Streamlit page share the same `StoryboardPatch`/`ShotPatch`/
+  `StoryboardUpdateRequest` objects — no duplicated business logic.
+- **ADR-106e.** Storyboards are versioned rows: every generation writes a new
+  `version` (unique per city), so history is immutable and the edit path is
+  explicit — editing an `approved` storyboard demotes it to `draft`.
+  Accessibility and cultural-sensitivity notes are persisted on the storyboard
+  (`*_notes_json`), because losing them would silently drop the a11y layer.
+
+### Files
+
+- `core/models.py` — `NarrativeBeatType`, `StoryboardStatus` (+ transition table),
+  `NarrativePhoto`, `NarrativeContext`, `NarrativeBeat`, `StoryboardShot`,
+  `Storyboard`, `VisualNarrativePlan`, `StoryboardBundle`, `VisualNarrativeResult`.
+- `core/database.py` — `storyboards`, `narrative_beats`, `storyboard_shots`
+  (idempotent `CREATE TABLE IF NOT EXISTS`), CRUD/atomic graph write, column
+  whitelists, row converters.
+- `core/config.py` + `config.yaml` + `.env.example` — `visual_narrative`
+  (`enabled`, `provider`, `max_photos`, `require_alt_text`,
+  `enforce_narrative_arc`, `allow_manual_override`, `require_approval`) and the
+  reserved `LOCAL_VLM_*` variables.
+- `core/exceptions.py` — `StoryboardValidationError` (carries `issues`).
+- `modules/ai/base.py` — `generate_visual_narrative_plan()` default implementation,
+  `analyze_photo_sequence()`, JSON extraction + payload→plan mapping.
+- `modules/ai/mock.py`, `modules/ai/registry.py` — deterministic mock plan, the
+  `local_vlm` extension point.
+- `modules/narrative_heuristics.py`, `modules/narrative_prompts.py`,
+  `modules/visual_narrative_studio.py` — pure logic, prompt data, service.
+- `modules/content/engine.py` — `_build_visual_narrative()`, storyboard block in
+  `generate_base_story(city, facts, narrative_block="")` (backwards compatible).
+- `app.py` — `GET /api/cities/{id}/storyboard`,
+  `POST /api/cities/{id}/storyboard/generate`, `PUT /api/cities/{id}/storyboard`,
+  `POST /api/cities/{id}/storyboard/approve`, `GET /api/storyboards/{id}` +
+  domain-error handlers (404/409/422).
+- `ui/storyboard_page.py` + `ui/dashboard.py` — «🎬 Storyboard» tab (generate,
+  beats, shot order, captions/alt-texts, hero image, save, approve).
+- `tests/test_storyboard_models.py`, `tests/test_visual_narrative_studio.py`,
+  `tests/test_storyboard_api.py` — 49 tests.
+
+### Verification
+
+Full suite passes: `pytest -q` → 130 passed (81 before the feature);
+`python -m compileall app.py cli.py core modules ui tests` → clean.
+

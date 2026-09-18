@@ -5,10 +5,10 @@
 ## Current Position
 
 - **Milestone:** M1 — Foundation
-- **Phase:** P12 — Final verification
-- **Status:** execute
-- **Current task:** P12 complete (Final verification — app.py FastAPI + cli.py CLI + scheduler daemon wiring; run.sh no longer gap) — verified (tests/test_api.py: 4 passed; full suite 35 passed; cli.py stats/tick smoke).
-- **Last updated:** 2026-09-05
+- **Phase:** P14 — Visual Narrative Studio
+- **Status:** verify
+- **Current task:** P14 complete (Visual Narrative Studio, ADR-106 — visual-narrative layer between AI photo analysis and platform content: beats, storyboard, alt-texts, crop/focus hints, pacing) — verified (tests/test_visual_narrative_studio.py, tests/test_storyboard_models.py, tests/test_storyboard_api.py; full suite 130 passed; compileall clean).
+- **Last updated:** 2026-09-18
 
 ## Active Decisions
 
@@ -39,6 +39,7 @@
 - [x] P11: Tests — comprehensive per-phase coverage + end-to-end pipeline test (scan -> content -> approve -> schedule -> publish). Verified 2026-08-28 (tests/test_e2e_pipeline.py; full suite 31 passed).
 - [x] P12: Final verification — app.py (FastAPI admin API) + cli.py (CLI orchestration) + scheduler daemon wiring; run.sh fully functional. Verified 2026-08-28 (tests/test_api.py: 4 passed; full suite 35 passed; cli.py stats/tick smoke; e2e dry-run test_e2e_pipeline passes).
 - [x] P13: Architecture review (software-architect) + ADR-101..105 — full audit via docs/architecture-review-2026-09-04.md; all five ADRs implemented and verified. Verified 2026-09-04 (full suite 80 passed, 1 warning).
+- [x] P14: Visual Narrative Studio (ADR-106) — new narrative layer between AI photo analysis and platform content: `NarrativeBeat`/`StoryboardShot`/`Storyboard`/`VisualNarrativePlan` models + 3 idempotent SQLite tables, provider-level `generate_visual_narrative_plan()` (default impl in BaseAIProvider, deterministic mock, `local_vlm` extension point), `modules/visual_narrative_studio.py` (arc, storyboard, dry-run, edit/reorder/hero, approve gate), pipeline step + storyboard block in the base story, 5 admin-API endpoints, «🎬 Storyboard» Streamlit tab. Verified 2026-09-18 (full suite 130 passed, compileall clean, end-to-end smoke with the mock provider).
 
 ## ADR-101..105 (completed 2026-09-04)
 
@@ -47,6 +48,14 @@
 - [x] ADR-103: atomic publish claim (SCHEDULED/PENDING -> processing) + state-machine enforcement in update_publication (no double publish).
 - [x] ADR-104: media path honest — Telegram sends a media group (up to 10), degraded flag + loud log when caption truncated/photos dropped.
 - [x] ADR-105: removed ~210 dead wrapper lines in core/database.py; fixed /api/scheduler/publish-due (always returned []); BasePublisher.enabled wired; architectural guard tests; docs synced.
+
+## ADR-106 (completed 2026-09-18)
+
+- [x] ADR-106: Visual Narrative Studio — additive pipeline step (no new city status) between photo analysis and the base story; storyboard-level draft/approved/archived machine is the human gate; `require_approval` opt-in only.
+- [x] ADR-106b: provider abstraction preserved — default `generate_visual_narrative_plan()` in `BaseAIProvider` (JSON over the existing text HTTP path), deterministic mock, reserved `provider: local_vlm`; photo re-analysis reuses the pipeline's cached analysis prompt.
+- [x] ADR-106c: honest degradation — provider failure ⇒ local fallback marked `degraded` with a reason; no photos ⇒ skip; the step can never break a city.
+- [x] ADR-106d: single home for narrative logic (heuristics / prompts / SQL / service) and shared patch objects between API and UI — no duplicated business logic.
+- [x] ADR-106e: versioned storyboards (immutable history), edits to an approved storyboard demote it to draft, accessibility + cultural-sensitivity notes persisted.
 
 ## Recent Activity
 
@@ -71,3 +80,5 @@
 - 2026-09-05 — execute: cleanup pass applied (telegram media-group caption fix + honest degraded reason threading; update_publication_status dedup; state machine SCHEDULED->PROCESSING aligned with claim; _platform_enabled fail-safe; app.py/cli.py publish enum filter). Commit 68ddf60.
 - 2026-09-05 — execute: code review (requesting-code-review) — 2 Important fixes applied (real Bot API response shapes: media-group array vs object; text-only regression test on the 1025..4096 band) + minors (defensive file handles, CLI dict output). Commit a84bd0b. Verified: full suite 81 passed. Pushed b56ba8e..a84bd0b.
 - 2026-09-05 — verify: simplification safety — deliberate no-op: `_load_config` duplication retained (ADR-101 test boundary); RISKY items (run_due parallelism, stringly-typed retryable migration, platform-filter-in-engine) deferred to owner decision. Only remaining: real automation of VK photos / FB media-group (optional, owner decision).
+- 2026-09-18 — execute: P14 Visual Narrative Studio (ADR-106) — models + migrations (`storyboards`, `narrative_beats`, `storyboard_shots`; idempotent `CREATE TABLE IF NOT EXISTS`), `modules/narrative_heuristics.py` (arc/pacing/crop/alt-text validation + `ensure_arc` invariants), `modules/narrative_prompts.py`, provider-level `generate_visual_narrative_plan()` in `BaseAIProvider` + deterministic `MockProvider` override + `local_vlm` registry hook, `modules/visual_narrative_studio.py` (build/save/dry-run/edit/reorder/hero/approve/archive), pipeline step in `modules/content/engine.py`, 5 FastAPI endpoints with 404/409/422 mapping, `ui/storyboard_page.py` + dashboard tab.
+- 2026-09-18 — verify: full suite 130 passed (81 before; 49 new tests in `tests/test_storyboard_{models,api}.py` + `tests/test_visual_narrative_studio.py`); `python -m compileall app.py cli.py core modules ui tests` clean; end-to-end smoke on a temp DB (preview → persist → approve → reorder → blocked re-approval after alt-text was cleared → v2 keeps history). Two real bugs found by the smoke/test pass and fixed: the schema statement was missing its `;` (broke `connect()`), and `ensure_arc` could violate the arc/source invariants.
