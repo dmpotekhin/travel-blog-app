@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +40,10 @@ class Secrets(BaseSettings):
     replicate_api_token: str = ""
     openai_api_key: str = ""
     huggingface_api_key: str = ""
+    # Carousel Factory (ADR-107). Secrets only ever come from .env.
+    uploadpost_token: str = ""
+    uploadpost_user: str = ""
+    github_token: str = ""
 
 
 # --- Typed section models (mirror config.yaml) ---
@@ -260,6 +264,212 @@ class VisualNarrativeConfig(BaseModel):
     require_approval: bool = False
 
 
+class CarouselResolutionConfig(BaseModel):
+    """Slide canvas: 9:16 portrait, 768x1376 (TikTok / Reels safe)."""
+
+    width: int = 768
+    height: int = 1376
+
+
+class CarouselUrlSourceConfig(BaseModel):
+    """Config for the URL researcher (config.yaml ``carousels.sources.url``)."""
+
+    enabled: bool = True
+    timeout_seconds: int = 30
+    cache_ttl_seconds: int = 3600
+    extract_code_blocks: bool = True
+    extract_images: bool = True
+    extract_brand_colors: bool = True
+    #: polite crawling: min seconds between two requests to the same host
+    min_request_interval_seconds: float = 1.0
+    user_agent: str = "travel-blog-app-carousel/1.0 (+https://github.com/dmpotekhin/travel-blog-app)"
+    respect_robots_txt: bool = True
+    max_redirects: int = 5
+
+
+class CarouselGithubSourceConfig(BaseModel):
+    """Config for the GitHub researcher (``carousels.sources.github``)."""
+
+    enabled: bool = True
+    api_base: str = "https://api.github.com"
+    use_gh_cli_if_available: bool = True
+    include_readme: bool = True
+    include_issues: bool = True
+    include_prs: bool = True
+    include_discussions: bool = True
+    include_releases: bool = True
+    max_comments: int = 50
+    timeout_seconds: int = 30
+
+
+class CarouselSourcesConfig(BaseModel):
+    """All source adapters (URL + GitHub are the MVP entry points)."""
+
+    url: CarouselUrlSourceConfig = Field(default_factory=CarouselUrlSourceConfig)
+    github: CarouselGithubSourceConfig = Field(default_factory=CarouselGithubSourceConfig)
+
+
+class CarouselVerticalProfileConfig(BaseModel):
+    """One vertical profile (travel / qa / vibecoding / hybrid).
+
+    Empty defaults on purpose: the built-in profiles live in
+    ``modules.carousels.vertical_profiles`` and a config block only overrides
+    the fields it names, so a partial ``travel: {}`` in config.yaml keeps the
+    shipped defaults.
+    """
+
+    preferred_sources: List[str] = Field(default_factory=list)
+    default_narrative_template: str = ""
+    hook_categories: List[str] = Field(default_factory=list)
+    slide_types: List[str] = Field(default_factory=list)
+    visual_style: str = ""
+    caption_style: str = ""
+    hashtag_strategy: str = ""
+    cta_strategy: str = ""
+    forbidden: List[str] = Field(default_factory=list)
+
+
+class CarouselGeminiConfig(BaseModel):
+    """Gemini usage rules: backgrounds/illustrations only for technical verticals."""
+
+    enabled: bool = True
+    model: str = "gemini-3.1-flash-image-preview"
+    use_for_background_only_in_technical_verticals: bool = True
+    #: image-to-image: slides 2..6 reuse slide 1 as the style reference
+    reuse_first_slide_as_reference: bool = True
+
+
+class CarouselUploadPostConfig(BaseModel):
+    """Upload-Post publishing (TikTok + Instagram) — off unless enabled."""
+
+    enabled: bool = True
+    base_url: str = "https://api.upload-post.com"
+    auto_add_music: bool = True
+    privacy_level: str = "PUBLIC_TO_EVERYONE"
+    async_upload: bool = True
+    max_retries: int = 2
+    timeout_seconds: int = 120
+
+
+class CarouselAnalyticsConfig(BaseModel):
+    """When to pull metrics back from Upload-Post."""
+
+    enabled: bool = True
+    collect_after_hours: int = 24
+    recollect_after_hours: int = 72
+    max_posts_per_run: int = 50
+
+
+class CarouselLearningConfig(BaseModel):
+    """Learnings store + recommendation engine."""
+
+    enabled: bool = True
+    min_sample_size: int = 3
+    rolling_history: int = 100
+    #: never auto-apply recommendations in supervised mode
+    auto_apply_recommendations: bool = False
+
+
+class CarouselPerformanceLabConfig(BaseModel):
+    """Weights of the composite carousel score (config.yaml ``performance_lab``)."""
+
+    weights: Dict[str, float] = Field(
+        default_factory=lambda: {
+            "views": 0.20,
+            "likes": 0.25,
+            "comments": 0.20,
+            "shares": 0.15,
+            "saves": 0.10,
+            "approval": 0.05,
+            "rejection_penalty": 0.05,
+        }
+    )
+    min_sample_size: int = 3
+    rolling_history: int = 100
+
+
+class CarouselHealthConfig(BaseModel):
+    """Honesty gates: refuse to render a carousel the source cannot support."""
+
+    min_source_confidence: float = 0.5
+    require_source_refs_for_facts: bool = True
+    require_alt_text: bool = True
+    require_approval_for_publish: bool = True
+    max_headline_chars: int = 90
+    max_bullets_per_slide: int = 5
+    max_body_lines: int = 3
+
+
+class CarouselConfig(BaseModel):
+    """Tri-Face Carousel Factory (config.yaml ``carousels``).
+
+    ``supervised`` is the default and means: a human approves before any
+    publish. ``full_autonomous`` only relaxes that when an operator
+    explicitly sets both ``mode: full_autonomous`` and
+    ``require_human_approval: false``.
+    """
+
+    enabled: bool = True
+    mode: str = "supervised"
+    require_human_approval: bool = True
+    default_vertical: str = "hybrid"
+    slide_count: int = 6
+    resolution: CarouselResolutionConfig = Field(default_factory=CarouselResolutionConfig)
+    format: str = "jpg"
+    aspect_ratio: str = "9:16"
+    bottom_safe_zone_percent: float = 20.0
+    max_regeneration_attempts: int = 2
+    output_dir: str = "public/carousels"
+    renderer: str = "pillow"          # pillow | html | mock
+    #: dry_run never touches Gemini/Upload-Post: placeholders + mock publisher.
+    dry_run: bool = True
+    hook_candidates_min: int = 3
+    hook_candidates_max: int = 5
+    target_platforms: List[str] = Field(default_factory=lambda: ["tiktok", "instagram"])
+    sources: CarouselSourcesConfig = Field(default_factory=CarouselSourcesConfig)
+    verticals: Dict[str, CarouselVerticalProfileConfig] = Field(default_factory=dict)
+    gemini: CarouselGeminiConfig = Field(default_factory=CarouselGeminiConfig)
+    upload_post: CarouselUploadPostConfig = Field(default_factory=CarouselUploadPostConfig)
+    analytics: CarouselAnalyticsConfig = Field(default_factory=CarouselAnalyticsConfig)
+    learning: CarouselLearningConfig = Field(default_factory=CarouselLearningConfig)
+    performance_lab: CarouselPerformanceLabConfig = Field(default_factory=CarouselPerformanceLabConfig)
+    health: CarouselHealthConfig = Field(default_factory=CarouselHealthConfig)
+
+    @field_validator("mode")
+    @classmethod
+    def _known_mode(cls, value: str) -> str:
+        mode = (value or "supervised").strip().lower()
+        if mode not in ("supervised", "full_autonomous"):
+            raise ValueError(f"carousels.mode must be supervised|full_autonomous, got {value!r}")
+        return mode
+
+    @field_validator("format")
+    @classmethod
+    def _jpg_only(cls, value: str) -> str:
+        """TikTok accepts JPG only — anything else is silently a bug."""
+        fmt = (value or "jpg").strip().lower().lstrip(".")
+        if fmt not in ("jpg", "jpeg"):
+            raise ValueError(f"carousels.format must be jpg (TikTok rejects PNG), got {value!r}")
+        return "jpg"
+
+    @property
+    def is_full_autonomous(self) -> bool:
+        """True only when autonomy was explicitly switched on."""
+        return self.mode == "full_autonomous"
+
+    @property
+    def publishing_requires_approval(self) -> bool:
+        """Supervised mode (or an explicit flag) always keeps the human in the loop."""
+        if self.health.require_approval_for_publish:
+            return not (self.is_full_autonomous and not self.require_human_approval)
+        return not self.is_full_autonomous
+
+    @property
+    def bottom_safe_zone_pixels(self) -> int:
+        """Height of the unusable bottom band (TikTok UI overlay)."""
+        return int(round(self.resolution.height * self.bottom_safe_zone_percent / 100.0))
+
+
 class Config(BaseModel):
     app: AppConfig = Field(default_factory=AppConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -275,6 +485,7 @@ class Config(BaseModel):
     trip: TripConfig = Field(default_factory=TripConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     visual_narrative: VisualNarrativeConfig = Field(default_factory=VisualNarrativeConfig)
+    carousels: CarouselConfig = Field(default_factory=CarouselConfig)
     queue: QueueConfig = Field(default_factory=QueueConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     content: ContentConfig = Field(default_factory=ContentConfig)

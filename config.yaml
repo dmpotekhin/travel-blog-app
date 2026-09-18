@@ -219,3 +219,140 @@ vibecoding_guidelines:
   default_engagement_question: "А какой инструмент используешь ты? Делитесь в комментариях!"
   ai_image_prompt_template: "Футуристический кодер, строки кода, абстрактный фон, стиль технологичный"
   block_non_compliant: false     # soft gate: log + show in UI, do NOT block publish
+
+# ---- Tri-Face Carousel Factory (ADR-107) ----
+# Three faces: travel | qa | vibecoding. Primary entry points: a URL or a
+# GitHub ref (repo/issue/PR/discussion/release) -> 6-slide 768x1376 JPG
+# carousel for TikTok + Instagram, with a human approval in between.
+carousels:
+  enabled: true
+  # supervised = a human approves before publish (default, keep it that way).
+  # full_autonomous only relaxes the gate when require_human_approval is also false.
+  mode: supervised
+  require_human_approval: true
+  default_vertical: hybrid       # travel | qa | vibecoding | hybrid
+  slide_count: 6
+  resolution:
+    width: 768
+    height: 1376
+  format: jpg                    # TikTok rejects PNG — JPG only
+  aspect_ratio: "9:16"
+  bottom_safe_zone_percent: 20   # TikTok UI overlays live in the bottom 20%
+  max_regeneration_attempts: 2
+  output_dir: public/carousels
+  renderer: pillow               # pillow | html | mock
+  hook_candidates_min: 3
+  hook_candidates_max: 5
+  target_platforms: [tiktok, instagram]
+  sources:
+    url:
+      enabled: true
+      timeout_seconds: 30
+      cache_ttl_seconds: 3600
+      extract_code_blocks: true
+      extract_images: true
+      extract_brand_colors: true
+      min_request_interval_seconds: 1.0
+      respect_robots_txt: true
+      max_redirects: 5
+    github:
+      enabled: true
+      api_base: https://api.github.com
+      use_gh_cli_if_available: true
+      include_readme: true
+      include_issues: true
+      include_prs: true
+      include_discussions: true
+      include_releases: true
+      max_comments: 50
+      timeout_seconds: 30
+  verticals:
+    travel:
+      preferred_sources: [city, photo_archive, article_url, url]
+      default_narrative_template: travel_hook_reality_route_cta
+      hook_categories: [hidden_place, expectation_vs_reality, budget, solo_travel,
+                        cultural_contrast, route_guide, personal_experience,
+                        secret_spot, seasonality]
+      slide_types: [hero_hook, photo_card, problem, solution, route_map, cta]
+      visual_style: cinematic_documentary
+      caption_style: personal_story
+      hashtag_strategy: travel_location_season
+      cta_strategy: save_before_trip
+      forbidden: [fake_landmarks_presented_as_real, sensitive_people_without_consent,
+                  exact_prices_without_source]
+    qa:
+      preferred_sources: [github_issue, github_pr, test_report, code_snippet,
+                          qa_artifact, url]
+      default_narrative_template: qa_incident_detective_checklist
+      hook_categories: [failure, contrarian, number_list, mystery, cost,
+                        before_after, myth_busting, flaky_test, ci_slowdown, root_cause]
+      slide_types: [hero_hook, symptom, agitation, investigation, fix_code,
+                    prevention_checklist]
+      visual_style: technical_clean
+      caption_style: engineering_postmortem
+      hashtag_strategy: testing_ci_quality
+      cta_strategy: save_checklist
+      forbidden: [invented_root_cause, invented_metrics, invented_code,
+                  truncated_code_without_warning]
+    vibecoding:
+      preferred_sources: [vibecoding_session, vibecoding_post, github_repo, url,
+                          manual_topic, code_snippet]
+      default_narrative_template: vibecoding_claim_old_new_evidence_cta
+      hook_categories: [speed, local_ai, agent_workflow, prompt_to_product,
+                        experiment, anti_pattern, stack_tour, ai_vs_human,
+                        evening_build, tool_comparison]
+      slide_types: [bold_claim, task_context, old_way, new_way, metrics_comparison,
+                    architecture_diagram, cta]
+      visual_style: futuristic_minimal
+      caption_style: builder_diary
+      hashtag_strategy: ai_agents_local_llm_automation
+      cta_strategy: comment_keyword_for_prompt
+      forbidden: [hype_without_evidence, invented_benchmarks, fake_screenshots,
+                  undisclosed_cloud_usage_when_claiming_local]
+    hybrid: {}                   # neutral profile: uses built-in defaults
+  gemini:
+    enabled: true
+    model: gemini-3.1-flash-image-preview
+    # QA/Vibecoding: Gemini paints backgrounds ONLY; text/code/metrics are
+    # composited deterministically (Pillow/HTML), never drawn by the model.
+    use_for_background_only_in_technical_verticals: true
+    reuse_first_slide_as_reference: true
+  upload_post:
+    enabled: true
+    base_url: https://api.upload-post.com
+    auto_add_music: true
+    privacy_level: PUBLIC_TO_EVERYONE
+    async_upload: true
+    max_retries: 2
+    timeout_seconds: 120
+  analytics:
+    enabled: true
+    collect_after_hours: 24
+    recollect_after_hours: 72
+    max_posts_per_run: 50
+  learning:
+    enabled: true
+    min_sample_size: 3
+    rolling_history: 100
+    auto_apply_recommendations: false   # supervised mode: recommend, never auto-apply
+  # Composite score weights (config.yaml §performance_lab of the task spec).
+  # Kept under `carousels:` deliberately: one source of truth for the weights.
+  performance_lab:
+    weights:
+      views: 0.20
+      likes: 0.25
+      comments: 0.20
+      shares: 0.15
+      saves: 0.10
+      approval: 0.05
+      rejection_penalty: 0.05
+    min_sample_size: 3
+    rolling_history: 100
+  health:
+    min_source_confidence: 0.5
+    require_source_refs_for_facts: true
+    require_alt_text: true
+    require_approval_for_publish: true
+    max_headline_chars: 90
+    max_bullets_per_slide: 5
+    max_body_lines: 3

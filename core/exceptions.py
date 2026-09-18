@@ -5,6 +5,8 @@ can catch everything. Error categories drive retry/backoff decisions.
 """
 from __future__ import annotations
 
+from typing import List, Optional
+
 
 class TravelBlogError(Exception):
     """Base exception for all application-level errors."""
@@ -119,6 +121,41 @@ class StoryboardValidationError(TravelBlogError):
         super().__init__(message, code="storyboard_invalid", cause=cause)
         #: machine-readable reasons (see modules/narrative_heuristics.alt_text_issues)
         self.issues: List[str] = list(issues or [])
+
+
+class CarouselError(TravelBlogError):
+    """Carousel Factory (ADR-107) failed: source, planning, render or verification."""
+
+    def __init__(self, message: str = "", *, cause: Optional[Exception] = None) -> None:
+        super().__init__(message, code="carousel_error", cause=cause)
+
+
+class InsufficientSourceDataError(CarouselError):
+    """The source did not carry enough verified facts to build a carousel.
+
+    Raised instead of inventing content: the caller must mark the job
+    ``low_confidence`` and ask a human to supply the missing facts.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        issues: Optional[List[str]] = None,
+        cause: Optional[Exception] = None,
+    ) -> None:
+        super().__init__(message, cause=cause)
+        self.code = "insufficient_source_data"
+        #: machine-readable reasons (what is missing)
+        self.issues: List[str] = list(issues or [])
+
+
+class PublishNotApprovedError(CarouselError):
+    """Publishing was attempted without a human approval (supervised mode)."""
+
+    def __init__(self, message: str = "", *, cause: Optional[Exception] = None) -> None:
+        super().__init__(message, cause=cause)
+        self.code = "publish_not_approved"
 
 
 class ErrorCategory:

@@ -222,7 +222,286 @@ CREATE INDEX IF NOT EXISTS idx_storyboards_city ON storyboards(city_id, version)
 CREATE INDEX IF NOT EXISTS idx_storyboards_status ON storyboards(status);
 CREATE INDEX IF NOT EXISTS idx_beats_storyboard ON narrative_beats(storyboard_id, "order");
 CREATE INDEX IF NOT EXISTS idx_shots_storyboard ON storyboard_shots(storyboard_id, "order");
+
+-- ---------------------------------------------------------------------------
+-- Tri-Face Carousel Factory (ADR-107). Additive only: a carousel job is driven
+-- by a source (URL / GitHub / city / manual), walks _CAROUSEL_TRANSITIONS, and
+-- always passes through a human approval before publishing. Text that must stay
+-- exact (code, metrics, bullets) is stored as JSON and re-rendered
+-- deterministically — Gemini only ever paints backgrounds.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS carousel_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vertical TEXT NOT NULL DEFAULT 'hybrid',
+    source_type TEXT NOT NULL DEFAULT 'manual_topic',
+    source_id INTEGER,
+    source_url TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    logline TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    autonomy_mode TEXT NOT NULL DEFAULT 'supervised',
+    selected_hook_id INTEGER,
+    narrative_template TEXT NOT NULL DEFAULT '',
+    target_platforms_json TEXT NOT NULL DEFAULT '[]',
+    caption TEXT NOT NULL DEFAULT '',
+    hashtags_json TEXT NOT NULL DEFAULT '[]',
+    source_context_json TEXT NOT NULL DEFAULT '{}',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    error_message TEXT NOT NULL DEFAULT '',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    dry_run INTEGER NOT NULL DEFAULT 0,
+    approved_by TEXT NOT NULL DEFAULT '',
+    approved_at TEXT,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS carousel_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER REFERENCES carousel_jobs(id) ON DELETE SET NULL,
+    source_type TEXT NOT NULL DEFAULT 'url',
+    vertical TEXT NOT NULL DEFAULT 'hybrid',
+    source_ref TEXT NOT NULL DEFAULT '',
+    canonical_url TEXT NOT NULL DEFAULT '',
+    external_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    context_json TEXT NOT NULL DEFAULT '{}',
+    raw_payload_json TEXT NOT NULL DEFAULT '{}',
+    resolver TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS carousel_slides (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES carousel_jobs(id) ON DELETE CASCADE,
+    "order" INTEGER NOT NULL DEFAULT 0,
+    slide_type TEXT NOT NULL DEFAULT 'hero_hook',
+    headline TEXT NOT NULL DEFAULT '',
+    subheadline TEXT NOT NULL DEFAULT '',
+    body_text TEXT NOT NULL DEFAULT '',
+    bullets_json TEXT NOT NULL DEFAULT '[]',
+    code_json TEXT NOT NULL DEFAULT '{}',
+    metrics_json TEXT NOT NULL DEFAULT '[]',
+    image_asset_json TEXT NOT NULL DEFAULT '{}',
+    source_refs_json TEXT NOT NULL DEFAULT '[]',
+    background_prompt TEXT NOT NULL DEFAULT '',
+    background_image_path TEXT NOT NULL DEFAULT '',
+    background_style TEXT NOT NULL DEFAULT '',
+    accent_color TEXT NOT NULL DEFAULT '',
+    overlay_html TEXT NOT NULL DEFAULT '',
+    final_image_path TEXT NOT NULL DEFAULT '',
+    alt_text TEXT NOT NULL DEFAULT '',
+    quality_score REAL NOT NULL DEFAULT 0.0,
+    verification_status TEXT NOT NULL DEFAULT 'pending',
+    verification_issues_json TEXT NOT NULL DEFAULT '[]',
+    regeneration_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS carousel_hook_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES carousel_jobs(id) ON DELETE CASCADE,
+    category TEXT NOT NULL DEFAULT '',
+    pattern TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL DEFAULT '',
+    score REAL NOT NULL DEFAULT 0.0,
+    expected_emotion TEXT NOT NULL DEFAULT '',
+    rationale TEXT NOT NULL DEFAULT '',
+    source_support TEXT NOT NULL DEFAULT '',
+    scores_json TEXT NOT NULL DEFAULT '{}',
+    is_selected INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS carousel_publications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES carousel_jobs(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL DEFAULT '',
+    request_id TEXT NOT NULL DEFAULT '',
+    external_id TEXT NOT NULL DEFAULT '',
+    post_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    published_at TEXT,
+    error_message TEXT NOT NULL DEFAULT '',
+    raw_response_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS carousel_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    publication_id INTEGER REFERENCES carousel_publications(id) ON DELETE CASCADE,
+    job_id INTEGER NOT NULL REFERENCES carousel_jobs(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL DEFAULT '',
+    metric_name TEXT NOT NULL DEFAULT '',
+    metric_value REAL NOT NULL DEFAULT 0.0,
+    raw_value TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    collected_at TEXT NOT NULL,
+    raw_payload_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS carousel_learnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_type TEXT NOT NULL DEFAULT 'vertical',
+    scope_value TEXT NOT NULL DEFAULT '',
+    metric_name TEXT NOT NULL DEFAULT '',
+    metric_value REAL NOT NULL DEFAULT 0.0,
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS carousel_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vertical TEXT NOT NULL DEFAULT 'hybrid',
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    slide_sequence_json TEXT NOT NULL DEFAULT '[]',
+    hook_categories_json TEXT NOT NULL DEFAULT '[]',
+    visual_style TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS qa_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL DEFAULT 'qa_artifact',
+    external_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    severity TEXT NOT NULL DEFAULT '',
+    symptoms_json TEXT NOT NULL DEFAULT '[]',
+    investigation_json TEXT NOT NULL DEFAULT '[]',
+    root_cause TEXT NOT NULL DEFAULT '',
+    root_cause_verified INTEGER NOT NULL DEFAULT 0,
+    fix_description TEXT NOT NULL DEFAULT '',
+    code_snippet TEXT NOT NULL DEFAULT '',
+    code_language TEXT NOT NULL DEFAULT '',
+    metrics_json TEXT NOT NULL DEFAULT '[]',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    source_url TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vibecoding_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL DEFAULT '',
+    goal TEXT NOT NULL DEFAULT '',
+    prompts_json TEXT NOT NULL DEFAULT '[]',
+    tools_used_json TEXT NOT NULL DEFAULT '[]',
+    files_changed_json TEXT NOT NULL DEFAULT '[]',
+    diff_summary TEXT NOT NULL DEFAULT '',
+    tests_before TEXT NOT NULL DEFAULT '',
+    tests_after TEXT NOT NULL DEFAULT '',
+    duration_minutes INTEGER,
+    tokens_used INTEGER,
+    cost_estimate REAL,
+    outcome TEXT NOT NULL DEFAULT '',
+    lessons_json TEXT NOT NULL DEFAULT '[]',
+    screenshots_json TEXT NOT NULL DEFAULT '[]',
+    local_only INTEGER NOT NULL DEFAULT 0,
+    source_url TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_carousel_jobs_status ON carousel_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_carousel_jobs_vertical ON carousel_jobs(vertical);
+CREATE INDEX IF NOT EXISTS idx_carousel_jobs_source_type ON carousel_jobs(source_type);
+CREATE INDEX IF NOT EXISTS idx_carousel_jobs_created ON carousel_jobs(created_at);
+CREATE INDEX IF NOT EXISTS idx_carousel_slides_job ON carousel_slides(job_id, "order");
+CREATE INDEX IF NOT EXISTS idx_carousel_hooks_job ON carousel_hook_candidates(job_id, is_selected);
+CREATE INDEX IF NOT EXISTS idx_carousel_publications_job ON carousel_publications(job_id, platform);
+CREATE INDEX IF NOT EXISTS idx_carousel_metrics_publication ON carousel_metrics(publication_id);
+CREATE INDEX IF NOT EXISTS idx_carousel_metrics_lookup ON carousel_metrics(platform, metric_name, collected_at);
+CREATE INDEX IF NOT EXISTS idx_carousel_learnings_scope ON carousel_learnings(scope_type, scope_value);
+CREATE INDEX IF NOT EXISTS idx_carousel_sources_job ON carousel_sources(job_id, source_type);
+
+-- One published request_id == one post: retries must reuse it, never republish.
+-- Partial index so not-yet-published rows ('' request_id) stay unlimited.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_carousel_publications_request_id
+    ON carousel_publications(request_id) WHERE request_id <> '';
+
+-- Templates are versioned: the same name may exist in several versions.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_carousel_templates_name_version
+    ON carousel_templates(name, version);
+
+-- Learnings are upserts keyed by scope + metric.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_carousel_learnings_key
+    ON carousel_learnings(scope_type, scope_value, metric_name);
 """
+
+# Whitelists for carousel writes (dynamic SQL uses column names, so only names
+# from these sets may reach an UPDATE statement).
+# ``status`` is deliberately absent on the job: a job may only move through
+# _CAROUSEL_TRANSITIONS, i.e. through update_carousel_job_status().
+_CAROUSEL_JOB_WRITABLE = frozenset(
+    {
+        "vertical",
+        "source_type",
+        "source_id",
+        "source_url",
+        "title",
+        "logline",
+        "autonomy_mode",
+        "selected_hook_id",
+        "narrative_template",
+        "target_platforms_json",
+        "caption",
+        "hashtags_json",
+        "source_context_json",
+        "confidence",
+        "error_message",
+        "warnings_json",
+        "dry_run",
+        "approved_by",
+        "approved_at",
+    }
+)
+
+_CAROUSEL_SLIDE_WRITABLE = frozenset(
+    {
+        "order",
+        "slide_type",
+        "headline",
+        "subheadline",
+        "body_text",
+        "bullets_json",
+        "code_json",
+        "metrics_json",
+        "image_asset_json",
+        "source_refs_json",
+        "background_prompt",
+        "background_image_path",
+        "background_style",
+        "accent_color",
+        "overlay_html",
+        "final_image_path",
+        "alt_text",
+        "quality_score",
+        "verification_status",
+        "verification_issues_json",
+        "regeneration_count",
+    }
+)
+
+_CAROUSEL_PUBLICATION_WRITABLE = frozenset(
+    {
+        "platform",
+        "request_id",
+        "external_id",
+        "post_url",
+        "status",
+        "published_at",
+        "error_message",
+        "raw_response_json",
+    }
+)
 
 # Whitelists for storyboard writes (Visual Narrative Studio): dynamic SQL uses
 # column names, so only names from these sets may reach an UPDATE statement.
@@ -1357,6 +1636,890 @@ class Database:
             await conn.execute("DELETE FROM narrative_beats WHERE storyboard_id = ?", (storyboard_id,))
             await conn.execute("DELETE FROM storyboard_shots WHERE storyboard_id = ?", (storyboard_id,))
 
+    # ------------------------------------------------------------------
+    # Carousel Factory (ADR-107): jobs
+    # ------------------------------------------------------------------
+
+    async def create_carousel_job(self, job: m.CarouselJob) -> m.CarouselJob:
+        """Insert a carousel job. Always starts at ``pending``."""
+        now = _iso(utcnow())
+        job_id = await self._insert(
+            """
+            INSERT INTO carousel_jobs (vertical, source_type, source_id, source_url, title, logline,
+                                       status, autonomy_mode, selected_hook_id, narrative_template,
+                                       target_platforms_json, caption, hashtags_json,
+                                       source_context_json, confidence, error_message, warnings_json,
+                                       dry_run, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _enum_value(job.vertical),
+                _enum_value(job.source_type),
+                job.source_id,
+                job.source_url,
+                job.title,
+                job.logline,
+                _enum_value(job.status),
+                _enum_value(job.autonomy_mode),
+                job.selected_hook_id,
+                job.narrative_template,
+                job.target_platforms_json,
+                job.caption,
+                job.hashtags_json,
+                job.source_context_json,
+                float(job.confidence),
+                job.error_message,
+                job.warnings_json,
+                int(bool(job.dry_run)),
+                job.created_by,
+                _iso(job.created_at) or now,
+                _iso(job.updated_at) or now,
+            ),
+        )
+        return await self._require_carousel_job(job_id)
+
+    async def get_carousel_job(self, job_id: int) -> Optional[m.CarouselJob]:
+        row = await self._fetchone("SELECT * FROM carousel_jobs WHERE id = ?", (job_id,))
+        return _carousel_job_from_row(row)
+
+    async def _require_carousel_job(self, job_id: int) -> m.CarouselJob:
+        job = await self.get_carousel_job(job_id)
+        if job is None:  # pragma: no cover - the row was just written
+            raise DatabaseError(f"Carousel job {job_id} not found after write")
+        return job
+
+    async def list_carousel_jobs(
+        self,
+        status: Optional[str] = None,
+        vertical: Optional[str] = None,
+        source_type: Optional[str] = None,
+        created_after: Optional[datetime] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[m.CarouselJob]:
+        """Newest-first job list with the filters the API/UI expose."""
+        sql = "SELECT * FROM carousel_jobs"
+        where: List[str] = []
+        params: List = []
+        if status:
+            where.append("status = ?")
+            params.append(_enum_value(status))
+        if vertical:
+            where.append("vertical = ?")
+            params.append(_enum_value(vertical))
+        if source_type:
+            where.append("source_type = ?")
+            params.append(_enum_value(source_type))
+        if created_after is not None:
+            where.append("created_at >= ?")
+            params.append(_iso(created_after))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
+        rows = await self._fetchall(sql, params)
+        return [job for job in (_carousel_job_from_row(r) for r in rows) if job is not None]
+
+    async def update_carousel_job(self, job_id: int, **fields: object) -> Optional[m.CarouselJob]:
+        """Update whitelisted job columns; unknown names raise ValueError.
+
+        ``status`` is not writable here on purpose: see
+        :meth:`update_carousel_job_status`.
+        """
+        sets: List[str] = []
+        values: List = []
+        for key, value in fields.items():
+            if key not in _CAROUSEL_JOB_WRITABLE:
+                raise ValueError(f"Cannot update carousel job column {key!r}")
+            sets.append(f"{key} = ?")
+            values.append(_sql_value(value))
+        if not sets:
+            return await self.get_carousel_job(job_id)
+        sets.append("updated_at = ?")
+        values.append(_iso(utcnow()))
+        values.append(job_id)
+        async with self.transaction() as conn:
+            await conn.execute(f"UPDATE carousel_jobs SET {', '.join(sets)} WHERE id = ?", tuple(values))
+        return await self.get_carousel_job(job_id)
+
+    async def update_carousel_job_status(self, job_id: int, status: str) -> Optional[m.CarouselJob]:
+        """Move a carousel job through its state machine.
+
+        This is the only writer of ``carousel_jobs.status``: an illegal hop
+        raises :class:`StateTransitionError` before anything is written.
+        """
+        current = await self.get_carousel_job(job_id)
+        if current is None:
+            raise NotFoundError(f"Carousel job {job_id} not found")
+        m.carousel_transition(str(_enum_value(current.status)), str(_enum_value(status)))
+        async with self.transaction() as conn:
+            await conn.execute(
+                "UPDATE carousel_jobs SET status = ?, updated_at = ? WHERE id = ?",
+                (str(_enum_value(status)), _iso(utcnow()), job_id),
+            )
+        return await self.get_carousel_job(job_id)
+
+    async def fail_carousel_job(self, job_id: int, error_message: str) -> Optional[m.CarouselJob]:
+        """Move a job to ``failed`` and keep why it failed."""
+        current = await self.get_carousel_job(job_id)
+        if current is None:
+            raise NotFoundError(f"Carousel job {job_id} not found")
+        m.carousel_transition(str(_enum_value(current.status)), m.CarouselStatus.FAILED.value)
+        async with self.transaction() as conn:
+            await conn.execute(
+                "UPDATE carousel_jobs SET status = ?, error_message = ?, updated_at = ? WHERE id = ?",
+                (
+                    m.CarouselStatus.FAILED.value,
+                    error_message[:2000],
+                    _iso(utcnow()),
+                    job_id,
+                ),
+            )
+        return await self.get_carousel_job(job_id)
+
+    # ------------------------------------------------------------------
+    # Carousel Factory: slides
+    # ------------------------------------------------------------------
+
+    async def save_carousel_slides(
+        self, job_id: int, slides: List[m.CarouselSlide], replace: bool = True
+    ) -> List[m.CarouselSlide]:
+        """Write the slide plan of a job.
+
+        ``replace=True`` (default) rewrites the whole set atomically so a
+        half-saved carousel is impossible; the planner and the UI both use it.
+        """
+        if not replace:
+            for slide in slides:
+                await self.add_carousel_slide(slide, job_id=job_id)
+            return await self.get_carousel_slides(job_id)
+        now = _iso(utcnow())
+        async with self.transaction() as conn:
+            await conn.execute("DELETE FROM carousel_slides WHERE job_id = ?", (job_id,))
+            for index, slide in enumerate(slides):
+                await conn.execute(
+                    """
+                    INSERT INTO carousel_slides (job_id, "order", slide_type, headline, subheadline,
+                                                 body_text, bullets_json, code_json, metrics_json,
+                                                 image_asset_json, source_refs_json, background_prompt,
+                                                 background_image_path, background_style, accent_color,
+                                                 overlay_html, final_image_path, alt_text, quality_score,
+                                                 verification_status, verification_issues_json,
+                                                 regeneration_count, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        slide.order if slide.order is not None else index,
+                        slide.slide_type,
+                        slide.headline,
+                        slide.subheadline,
+                        slide.body_text,
+                        slide.bullets_json,
+                        slide.code_json,
+                        slide.metrics_json,
+                        slide.image_asset_json,
+                        slide.source_refs_json,
+                        slide.background_prompt,
+                        slide.background_image_path,
+                        slide.background_style,
+                        slide.accent_color,
+                        slide.overlay_html,
+                        slide.final_image_path,
+                        slide.alt_text,
+                        float(slide.quality_score),
+                        _enum_value(slide.verification_status),
+                        slide.verification_issues_json,
+                        int(slide.regeneration_count),
+                        _iso(slide.created_at) or now,
+                        _iso(slide.updated_at) or now,
+                    ),
+                )
+        return await self.get_carousel_slides(job_id)
+
+    async def add_carousel_slide(
+        self, slide: m.CarouselSlide, job_id: Optional[int] = None
+    ) -> m.CarouselSlide:
+        """Append one slide to a job (used for non-destructive edits)."""
+        target_job = job_id if job_id is not None else slide.job_id
+        if target_job is None:
+            raise DatabaseError("CarouselSlide.job_id is required")
+        now = _iso(utcnow())
+        slide_id = await self._insert(
+            """
+            INSERT INTO carousel_slides (job_id, "order", slide_type, headline, subheadline, body_text,
+                                         bullets_json, code_json, metrics_json, image_asset_json,
+                                         source_refs_json, background_prompt, background_image_path,
+                                         background_style, accent_color, overlay_html, final_image_path,
+                                         alt_text, quality_score, verification_status,
+                                         verification_issues_json, regeneration_count, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                target_job,
+                slide.order,
+                slide.slide_type,
+                slide.headline,
+                slide.subheadline,
+                slide.body_text,
+                slide.bullets_json,
+                slide.code_json,
+                slide.metrics_json,
+                slide.image_asset_json,
+                slide.source_refs_json,
+                slide.background_prompt,
+                slide.background_image_path,
+                slide.background_style,
+                slide.accent_color,
+                slide.overlay_html,
+                slide.final_image_path,
+                slide.alt_text,
+                float(slide.quality_score),
+                _enum_value(slide.verification_status),
+                slide.verification_issues_json,
+                int(slide.regeneration_count),
+                _iso(slide.created_at) or now,
+                _iso(slide.updated_at) or now,
+            ),
+        )
+        return await self._require_carousel_slide(slide_id)
+
+    async def get_carousel_slide(self, slide_id: int) -> Optional[m.CarouselSlide]:
+        row = await self._fetchone("SELECT * FROM carousel_slides WHERE id = ?", (slide_id,))
+        return _carousel_slide_from_row(row)
+
+    async def _require_carousel_slide(self, slide_id: int) -> m.CarouselSlide:
+        slide = await self.get_carousel_slide(slide_id)
+        if slide is None:  # pragma: no cover - the row was just written
+            raise DatabaseError(f"Carousel slide {slide_id} not found after write")
+        return slide
+
+    async def get_carousel_slides(self, job_id: int) -> List[m.CarouselSlide]:
+        rows = await self._fetchall(
+            'SELECT * FROM carousel_slides WHERE job_id = ? ORDER BY "order", id', (job_id,)
+        )
+        return [s for s in (_carousel_slide_from_row(r) for r in rows) if s is not None]
+
+    async def update_carousel_slide(self, slide_id: int, **fields: object) -> Optional[m.CarouselSlide]:
+        """Update whitelisted slide columns (headline, bullets, code, alt-text...)."""
+        sets: List[str] = []
+        values: List = []
+        for key, value in fields.items():
+            if key not in _CAROUSEL_SLIDE_WRITABLE:
+                raise ValueError(f"Cannot update carousel slide column {key!r}")
+            sets.append(f"{key} = ?")
+            values.append(_sql_value(value))
+        if not sets:
+            return await self.get_carousel_slide(slide_id)
+        sets.append("updated_at = ?")
+        values.append(_iso(utcnow()))
+        values.append(slide_id)
+        async with self.transaction() as conn:
+            await conn.execute(f"UPDATE carousel_slides SET {', '.join(sets)} WHERE id = ?", tuple(values))
+        return await self.get_carousel_slide(slide_id)
+
+    async def replace_carousel_slide_order(
+        self, job_id: int, ordered_slide_ids: List[int]
+    ) -> List[m.CarouselSlide]:
+        """Apply a new slide order: ``order`` becomes the index in the given list."""
+        async with self.transaction() as conn:
+            for position, slide_id in enumerate(ordered_slide_ids):
+                await conn.execute(
+                    'UPDATE carousel_slides SET "order" = ?, updated_at = ? WHERE id = ? AND job_id = ?',
+                    (position, _iso(utcnow()), slide_id, job_id),
+                )
+        return await self.get_carousel_slides(job_id)
+
+    async def delete_carousel_slides(self, job_id: int) -> None:
+        """Drop the slide plan of a job (re-planning starts from a clean slate)."""
+        async with self.transaction() as conn:
+            await conn.execute("DELETE FROM carousel_slides WHERE job_id = ?", (job_id,))
+
+    # ------------------------------------------------------------------
+    # Carousel Factory: hooks
+    # ------------------------------------------------------------------
+
+    async def save_hook_candidates(
+        self, job_id: int, candidates: List[m.CarouselHookCandidate], replace: bool = True
+    ) -> List[m.CarouselHookCandidate]:
+        """Store the hook candidates a human will choose from."""
+        now = _iso(utcnow())
+        async with self.transaction() as conn:
+            if replace:
+                await conn.execute(
+                    "DELETE FROM carousel_hook_candidates WHERE job_id = ?", (job_id,)
+                )
+            for candidate in candidates:
+                await conn.execute(
+                    """
+                    INSERT INTO carousel_hook_candidates (job_id, category, pattern, text, score,
+                                                          expected_emotion, rationale, source_support,
+                                                          scores_json, is_selected, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        _enum_value(candidate.category),
+                        candidate.pattern,
+                        candidate.text,
+                        float(candidate.score),
+                        candidate.expected_emotion,
+                        candidate.rationale,
+                        candidate.source_support,
+                        candidate.scores_json,
+                        int(bool(candidate.is_selected)),
+                        _iso(candidate.created_at) or now,
+                    ),
+                )
+        return await self.get_hook_candidates(job_id)
+
+    async def get_hook_candidates(
+        self, job_id: int, selected_only: bool = False
+    ) -> List[m.CarouselHookCandidate]:
+        sql = "SELECT * FROM carousel_hook_candidates WHERE job_id = ?"
+        if selected_only:
+            sql += " AND is_selected = 1"
+        sql += " ORDER BY score DESC, id"
+        rows = await self._fetchall(sql, (job_id,))
+        return [h for h in (_hook_from_row(r) for r in rows) if h is not None]
+
+    async def select_hook_candidate(
+        self, job_id: int, candidate_id: int
+    ) -> Optional[m.CarouselHookCandidate]:
+        """Mark exactly one hook as selected and remember it on the job."""
+        row = await self._fetchone(
+            "SELECT * FROM carousel_hook_candidates WHERE id = ? AND job_id = ?",
+            (candidate_id, job_id),
+        )
+        if row is None:
+            raise NotFoundError(f"Hook candidate {candidate_id} not found for carousel job {job_id}")
+        async with self.transaction() as conn:
+            await conn.execute(
+                "UPDATE carousel_hook_candidates SET is_selected = 0 WHERE job_id = ?", (job_id,)
+            )
+            await conn.execute(
+                "UPDATE carousel_hook_candidates SET is_selected = 1 WHERE id = ?", (candidate_id,)
+            )
+            await conn.execute(
+                "UPDATE carousel_jobs SET selected_hook_id = ?, updated_at = ? WHERE id = ?",
+                (candidate_id, _iso(utcnow()), job_id),
+            )
+        row = await self._fetchone("SELECT * FROM carousel_hook_candidates WHERE id = ?", (candidate_id,))
+        return _hook_from_row(row)
+
+    async def get_selected_hook(self, job_id: int) -> Optional[m.CarouselHookCandidate]:
+        rows = await self.get_hook_candidates(job_id, selected_only=True)
+        return rows[0] if rows else None
+
+    # ------------------------------------------------------------------
+    # Carousel Factory: source audit log
+    # ------------------------------------------------------------------
+
+    async def add_carousel_source(self, source: m.CarouselSourceRecord) -> m.CarouselSourceRecord:
+        """Record what a resolver saw (audit trail for facts/confidence)."""
+        now = _iso(utcnow())
+        source_id = await self._insert(
+            """
+            INSERT INTO carousel_sources (job_id, source_type, vertical, source_ref, canonical_url,
+                                          external_id, title, content_type, confidence, warnings_json,
+                                          context_json, raw_payload_json, resolver, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source.job_id,
+                _enum_value(source.source_type),
+                _enum_value(source.vertical),
+                source.source_ref,
+                source.canonical_url,
+                source.external_id,
+                source.title,
+                source.content_type,
+                float(source.confidence),
+                source.warnings_json,
+                source.context_json,
+                source.raw_payload_json,
+                source.resolver,
+                _iso(source.created_at) or now,
+            ),
+        )
+        row = await self._fetchone("SELECT * FROM carousel_sources WHERE id = ?", (source_id,))
+        stored = _carousel_source_from_row(row)
+        if stored is None:  # pragma: no cover - the row was just written
+            raise DatabaseError(f"Carousel source {source_id} not found after write")
+        return stored
+
+    async def list_carousel_sources(
+        self, job_id: Optional[int] = None, limit: Optional[int] = None
+    ) -> List[m.CarouselSourceRecord]:
+        sql = "SELECT * FROM carousel_sources"
+        params: List = []
+        if job_id is not None:
+            sql += " WHERE job_id = ?"
+            params.append(job_id)
+        sql += " ORDER BY created_at DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = await self._fetchall(sql, params)
+        return [s for s in (_carousel_source_from_row(r) for r in rows) if s is not None]
+
+    # ------------------------------------------------------------------
+    # Carousel Factory: publications
+    # ------------------------------------------------------------------
+
+    async def save_carousel_publication(
+        self, publication: m.CarouselPublication
+    ) -> m.CarouselPublication:
+        """Insert one platform row, idempotent by ``request_id``.
+
+        Re-saving a known request_id returns the stored row: a retry of an async
+        upload must never create a second post.
+        """
+        if publication.request_id:
+            existing = await self.get_publication_by_request_id(publication.request_id)
+            if existing is not None:
+                return existing
+        if publication.job_id is None:
+            raise DatabaseError("CarouselPublication.job_id is required")
+        now = _iso(utcnow())
+        try:
+            row_id = await self._insert(
+                """
+                INSERT INTO carousel_publications (job_id, platform, request_id, external_id, post_url,
+                                                   status, published_at, error_message,
+                                                   raw_response_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    publication.job_id,
+                    publication.platform,
+                    publication.request_id,
+                    publication.external_id,
+                    publication.post_url,
+                    _enum_value(publication.status),
+                    _iso(publication.published_at),
+                    publication.error_message,
+                    publication.raw_response_json,
+                    _iso(publication.created_at) or now,
+                ),
+            )
+        except (DuplicateError, aiosqlite.IntegrityError):
+            stored = (
+                await self.get_publication_by_request_id(publication.request_id)
+                if publication.request_id
+                else None
+            )
+            if stored is None:  # pragma: no cover - defensive
+                raise
+            return stored
+        return await self._require_carousel_publication(row_id)
+
+    async def get_carousel_publication(self, publication_id: int) -> Optional[m.CarouselPublication]:
+        row = await self._fetchone("SELECT * FROM carousel_publications WHERE id = ?", (publication_id,))
+        return _carousel_publication_from_row(row)
+
+    async def _require_carousel_publication(self, publication_id: int) -> m.CarouselPublication:
+        publication = await self.get_carousel_publication(publication_id)
+        if publication is None:  # pragma: no cover - the row was just written
+            raise DatabaseError(f"Carousel publication {publication_id} not found after write")
+        return publication
+
+    async def get_publication_by_request_id(self, request_id: str) -> Optional[m.CarouselPublication]:
+        """Look a publication up by the upload provider's request id."""
+        if not request_id:
+            return None
+        row = await self._fetchone(
+            "SELECT * FROM carousel_publications WHERE request_id = ? ORDER BY id DESC LIMIT 1",
+            (request_id,),
+        )
+        return _carousel_publication_from_row(row)
+
+    async def list_carousel_publications(
+        self, job_id: Optional[int] = None, platform: Optional[str] = None
+    ) -> List[m.CarouselPublication]:
+        sql = "SELECT * FROM carousel_publications"
+        where: List[str] = []
+        params: List = []
+        if job_id is not None:
+            where.append("job_id = ?")
+            params.append(job_id)
+        if platform:
+            where.append("platform = ?")
+            params.append(platform)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC, id DESC"
+        rows = await self._fetchall(sql, params)
+        return [p for p in (_carousel_publication_from_row(r) for r in rows) if p is not None]
+
+    async def update_carousel_publication(
+        self, publication_id: int, **fields: object
+    ) -> Optional[m.CarouselPublication]:
+        """Update whitelisted publication columns (status, request_id, post_url...)."""
+        sets: List[str] = []
+        values: List = []
+        for key, value in fields.items():
+            if key not in _CAROUSEL_PUBLICATION_WRITABLE:
+                raise ValueError(f"Cannot update carousel publication column {key!r}")
+            sets.append(f"{key} = ?")
+            values.append(_sql_value(value))
+        if not sets:
+            return await self.get_carousel_publication(publication_id)
+        values.append(publication_id)
+        async with self.transaction() as conn:
+            await conn.execute(
+                f"UPDATE carousel_publications SET {', '.join(sets)} WHERE id = ?", tuple(values)
+            )
+        return await self.get_carousel_publication(publication_id)
+
+    async def carousel_published_count(self, job_id: int) -> int:
+        """How many platform rows of this job are already live.
+
+        The publisher checks this before doing anything: a carousel that is
+        already published must never go out twice without an explicit action.
+        """
+        row = await self._fetchone(
+            "SELECT COUNT(*) AS n FROM carousel_publications WHERE job_id = ? AND status = ?",
+            (job_id, m.PublicationStatus.PUBLISHED.value),
+        )
+        return int(row["n"] or 0) if row else 0
+
+    # ------------------------------------------------------------------
+    # Carousel Factory: metrics
+    # ------------------------------------------------------------------
+
+    async def save_carousel_metric(self, metric: m.CarouselMetric) -> m.CarouselMetric:
+        """Store one collected number about a published carousel."""
+        if metric.job_id is None:
+            raise DatabaseError("CarouselMetric.job_id is required")
+        now = _iso(utcnow())
+        metric.id = await self._insert(
+            """
+            INSERT INTO carousel_metrics (publication_id, job_id, platform, metric_name, metric_value,
+                                          raw_value, source, collected_at, raw_payload_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                metric.publication_id,
+                metric.job_id,
+                metric.platform,
+                metric.metric_name,
+                float(metric.metric_value),
+                metric.raw_value,
+                metric.source,
+                _iso(metric.collected_at) or now,
+                metric.raw_payload_json,
+            ),
+        )
+        return metric
+
+    async def save_carousel_metrics(self, metrics: List[m.CarouselMetric]) -> List[m.CarouselMetric]:
+        """Bulk-store a collection run (one transaction, all or nothing)."""
+        if not metrics:
+            return []
+        now = _iso(utcnow())
+        async with self.transaction() as conn:
+            for metric in metrics:
+                if metric.job_id is None:
+                    raise DatabaseError("CarouselMetric.job_id is required")
+                cur = await conn.execute(
+                    """
+                    INSERT INTO carousel_metrics (publication_id, job_id, platform, metric_name,
+                                                  metric_value, raw_value, source, collected_at,
+                                                  raw_payload_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        metric.publication_id,
+                        metric.job_id,
+                        metric.platform,
+                        metric.metric_name,
+                        float(metric.metric_value),
+                        metric.raw_value,
+                        metric.source,
+                        _iso(metric.collected_at) or now,
+                        metric.raw_payload_json,
+                    ),
+                )
+                metric.id = int(cur.lastrowid or 0)
+        return metrics
+
+    async def list_carousel_metrics(
+        self,
+        job_id: Optional[int] = None,
+        publication_id: Optional[int] = None,
+        platform: Optional[str] = None,
+        metric_name: Optional[str] = None,
+        since: Optional[datetime] = None,
+        limit: Optional[int] = None,
+    ) -> List[m.CarouselMetric]:
+        sql = "SELECT * FROM carousel_metrics"
+        where: List[str] = []
+        params: List = []
+        if job_id is not None:
+            where.append("job_id = ?")
+            params.append(job_id)
+        if publication_id is not None:
+            where.append("publication_id = ?")
+            params.append(publication_id)
+        if platform:
+            where.append("platform = ?")
+            params.append(platform)
+        if metric_name:
+            where.append("metric_name = ?")
+            params.append(metric_name)
+        if since is not None:
+            where.append("collected_at >= ?")
+            params.append(_iso(since))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY collected_at DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = await self._fetchall(sql, params)
+        return [x for x in (_carousel_metric_from_row(r) for r in rows) if x is not None]
+
+    # ------------------------------------------------------------------
+    # Carousel Factory: learnings
+    # ------------------------------------------------------------------
+
+    async def upsert_carousel_learning(self, learning: m.CarouselLearning) -> m.CarouselLearning:
+        """Insert or update an aggregated learning (keyed by scope + metric).
+
+        The rolling history is a running aggregate, so a re-run must update the
+        row instead of appending a second one.
+        """
+        now = _iso(utcnow())
+        async with self.transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO carousel_learnings (scope_type, scope_value, metric_name, metric_value,
+                                                sample_size, confidence, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(scope_type, scope_value, metric_name) DO UPDATE SET
+                    metric_value = excluded.metric_value,
+                    sample_size = excluded.sample_size,
+                    confidence = excluded.confidence,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    _enum_value(learning.scope_type),
+                    learning.scope_value,
+                    learning.metric_name,
+                    float(learning.metric_value),
+                    int(learning.sample_size),
+                    float(learning.confidence),
+                    _iso(learning.updated_at) or now,
+                ),
+            )
+        return learning
+
+    async def get_carousel_learnings(
+        self,
+        scope_type: Optional[str] = None,
+        scope_value: Optional[str] = None,
+        min_sample_size: Optional[int] = 0,
+        limit: Optional[int] = None,
+    ) -> List[m.CarouselLearning]:
+        sql = "SELECT * FROM carousel_learnings"
+        where: List[str] = []
+        params: List = []
+        if scope_type:
+            where.append("scope_type = ?")
+            params.append(_enum_value(scope_type))
+        if scope_value:
+            where.append("scope_value = ?")
+            params.append(scope_value)
+        if min_sample_size:
+            where.append("sample_size >= ?")
+            params.append(int(min_sample_size))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY metric_value DESC, updated_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = await self._fetchall(sql, params)
+        return [x for x in (_carousel_learning_from_row(r) for r in rows) if x is not None]
+
+    # ------------------------------------------------------------------
+    # Carousel Factory: QA artifacts and vibecoding sessions
+    # ------------------------------------------------------------------
+
+    async def create_qa_artifact(self, artifact: m.QAArtifact) -> m.QAArtifact:
+        """Store a QA artifact (issue / flaky test / CI failure / postmortem)."""
+        now = _iso(utcnow())
+        artifact.id = await self._insert(
+            """
+            INSERT INTO qa_artifacts (source_type, external_id, title, summary, severity, symptoms_json,
+                                      investigation_json, root_cause, root_cause_verified,
+                                      fix_description, code_snippet, code_language, metrics_json,
+                                      tags_json, source_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _enum_value(artifact.source_type),
+                artifact.external_id,
+                artifact.title,
+                artifact.summary,
+                artifact.severity,
+                artifact.symptoms_json,
+                artifact.investigation_json,
+                artifact.root_cause,
+                int(bool(artifact.root_cause_verified)),
+                artifact.fix_description,
+                artifact.code_snippet,
+                artifact.code_language,
+                artifact.metrics_json,
+                artifact.tags_json,
+                artifact.source_url,
+                _iso(artifact.created_at) or now,
+            ),
+        )
+        return artifact
+
+    async def get_qa_artifact(self, artifact_id: int) -> Optional[m.QAArtifact]:
+        row = await self._fetchone("SELECT * FROM qa_artifacts WHERE id = ?", (artifact_id,))
+        return _qa_artifact_from_row(row)
+
+    async def list_qa_artifacts(
+        self,
+        source_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[m.QAArtifact]:
+        sql = "SELECT * FROM qa_artifacts"
+        where: List[str] = []
+        params: List = []
+        if source_type:
+            where.append("source_type = ?")
+            params.append(_enum_value(source_type))
+        if severity:
+            where.append("severity = ?")
+            params.append(_enum_value(severity))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = await self._fetchall(sql, params)
+        return [a for a in (_qa_artifact_from_row(r) for r in rows) if a is not None]
+
+    async def create_vibecoding_session(self, session: m.VibecodingSession) -> m.VibecodingSession:
+        """Store a builder session that a vibecoding carousel can be built from."""
+        now = _iso(utcnow())
+        session.id = await self._insert(
+            """
+            INSERT INTO vibecoding_sessions (title, goal, prompts_json, tools_used_json,
+                                             files_changed_json, diff_summary, tests_before, tests_after,
+                                             duration_minutes, tokens_used, cost_estimate, outcome,
+                                             lessons_json, screenshots_json, local_only, source_url,
+                                             created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session.title,
+                session.goal,
+                session.prompts_json,
+                session.tools_used_json,
+                session.files_changed_json,
+                session.diff_summary,
+                session.tests_before,
+                session.tests_after,
+                session.duration_minutes,
+                session.tokens_used,
+                session.cost_estimate,
+                session.outcome,
+                session.lessons_json,
+                session.screenshots_json,
+                int(bool(session.local_only)),
+                session.source_url,
+                _iso(session.created_at) or now,
+            ),
+        )
+        return session
+
+    async def get_vibecoding_session(self, session_id: int) -> Optional[m.VibecodingSession]:
+        row = await self._fetchone("SELECT * FROM vibecoding_sessions WHERE id = ?", (session_id,))
+        return _vibecoding_session_from_row(row)
+
+    async def list_vibecoding_sessions(self, limit: Optional[int] = None) -> List[m.VibecodingSession]:
+        sql = "SELECT * FROM vibecoding_sessions ORDER BY created_at DESC, id DESC"
+        params: List = []
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = await self._fetchall(sql, params)
+        return [s for s in (_vibecoding_session_from_row(r) for r in rows) if s is not None]
+
+    # ------------------------------------------------------------------
+    # Carousel Factory: templates
+    # ------------------------------------------------------------------
+
+    async def seed_carousel_templates(self, templates: List[m.CarouselTemplate]) -> List[m.CarouselTemplate]:
+        """Insert built-in templates once (idempotent by name+version)."""
+        now = _iso(utcnow())
+        for template in templates:
+            try:
+                await self._insert(
+                    """
+                    INSERT INTO carousel_templates (vertical, name, description, slide_sequence_json,
+                                                    hook_categories_json, visual_style, is_active,
+                                                    version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _enum_value(template.vertical),
+                        template.name,
+                        template.description,
+                        template.slide_sequence_json,
+                        template.hook_categories_json,
+                        template.visual_style,
+                        int(bool(template.is_active)),
+                        int(template.version),
+                        _iso(template.created_at) or now,
+                    ),
+                )
+            except (DuplicateError, aiosqlite.IntegrityError):
+                continue
+        return await self.list_carousel_templates(active_only=False)
+
+    async def get_carousel_template(self, template_id: int) -> Optional[m.CarouselTemplate]:
+        row = await self._fetchone("SELECT * FROM carousel_templates WHERE id = ?", (template_id,))
+        return _carousel_template_from_row(row)
+
+    async def list_carousel_templates(
+        self, vertical: Optional[str] = None, active_only: bool = True
+    ) -> List[m.CarouselTemplate]:
+        sql = "SELECT * FROM carousel_templates"
+        where: List[str] = []
+        params: List = []
+        if vertical:
+            where.append("vertical = ?")
+            params.append(_enum_value(vertical))
+        if active_only:
+            where.append("is_active = 1")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY vertical, name, version DESC"
+        rows = await self._fetchall(sql, params)
+        return [t for t in (_carousel_template_from_row(r) for r in rows) if t is not None]
+
+    async def get_carousel_template_by_name(
+        self, name: str, version: Optional[int] = None
+    ) -> Optional[m.CarouselTemplate]:
+        sql = "SELECT * FROM carousel_templates WHERE name = ?"
+        params: List = [name]
+        if version is not None:
+            sql += " AND version = ?"
+            params.append(int(version))
+        sql += " ORDER BY version DESC LIMIT 1"
+        return _carousel_template_from_row(await self._fetchone(sql, params))
+
 
 # --------------------------------------------------------------------------
 # Row -> model converters
@@ -1433,3 +2596,91 @@ def _log_from_row(row: Optional[dict]) -> Optional[m.OperationLog]:
     if row is None:
         return None
     return m.OperationLog(**row)
+
+
+# --------------------------------------------------------------------------
+# Carousel Factory (ADR-107) converters
+# --------------------------------------------------------------------------
+
+
+def _enum_value(value: object) -> object:
+    """Unwrap a str-Enum to its raw value; pass anything else through.
+
+    SQLite stores the string value ('pending'), while the domain models talk in
+    CarouselStatus.PENDING. Duck-typed (no ``enum`` import) because the same
+    helper is applied to datetimes and plain strings.
+    """
+    return getattr(value, "value", value)
+
+
+def _sql_value(value: object) -> object:
+    """Prepare a python value for SQLite: unwrap str-Enums, ISO-format datetimes.
+
+    ``sqlite3`` cannot bind ``datetime`` objects (the project stores UTC ISO
+    strings), so the audit fields (``approved_at``) are normalised here instead
+    of at every call site.
+    """
+    raw = getattr(value, "value", value)
+    if isinstance(raw, datetime):
+        return _iso(raw)
+    return raw
+
+
+def _carousel_job_from_row(row: Optional[dict]) -> Optional[m.CarouselJob]:
+    if row is None:
+        return None
+    return m.CarouselJob(**row)
+
+
+def _carousel_slide_from_row(row: Optional[dict]) -> Optional[m.CarouselSlide]:
+    if row is None:
+        return None
+    return m.CarouselSlide(**row)
+
+
+def _hook_from_row(row: Optional[dict]) -> Optional[m.CarouselHookCandidate]:
+    if row is None:
+        return None
+    return m.CarouselHookCandidate(**row)
+
+
+def _carousel_source_from_row(row: Optional[dict]) -> Optional[m.CarouselSourceRecord]:
+    if row is None:
+        return None
+    return m.CarouselSourceRecord(**row)
+
+
+def _carousel_publication_from_row(row: Optional[dict]) -> Optional[m.CarouselPublication]:
+    if row is None:
+        return None
+    return m.CarouselPublication(**row)
+
+
+def _carousel_metric_from_row(row: Optional[dict]) -> Optional[m.CarouselMetric]:
+    if row is None:
+        return None
+    return m.CarouselMetric(**row)
+
+
+def _carousel_learning_from_row(row: Optional[dict]) -> Optional[m.CarouselLearning]:
+    if row is None:
+        return None
+    return m.CarouselLearning(**row)
+
+
+def _qa_artifact_from_row(row: Optional[dict]) -> Optional[m.QAArtifact]:
+    if row is None:
+        return None
+    return m.QAArtifact(**row)
+
+
+def _vibecoding_session_from_row(row: Optional[dict]) -> Optional[m.VibecodingSession]:
+    if row is None:
+        return None
+    return m.VibecodingSession(**row)
+
+
+def _carousel_template_from_row(row: Optional[dict]) -> Optional[m.CarouselTemplate]:
+    if row is None:
+        return None
+    return m.CarouselTemplate(**row)
