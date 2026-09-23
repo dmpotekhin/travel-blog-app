@@ -44,3 +44,5 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+# CodeGraph local index (per-machine, do not commit)
+.codegraph/
